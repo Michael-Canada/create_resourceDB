@@ -58,7 +58,7 @@ GO_TO_GCLOUD = True
 
 def _get_auth(env_var: str = "SELF"):
     # return tuple(os.environ[env_var].split(":"))
-    return tuple('michael.simantov@enverus.com:Puffer(21)'.split(":"))
+    return tuple('michael.simantov@enverus.com:'.split(":"))
 
 coefficients = pd.read_pickle("/Users/michael.simantov/Documents/generator_gas_prices/coefficients_NG_hub_name.pkl")
 intercepts = pd.read_pickle("/Users/michael.simantov/Documents/generator_gas_prices/intercepts.pkl")
