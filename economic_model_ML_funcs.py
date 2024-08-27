@@ -11,6 +11,8 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
+from sklearn.ensemble import RandomForestRegressor
+
 
 '''
 This file contains the code for the economic model hypothesis testing project.
@@ -37,7 +39,7 @@ The steps in the code are:
 
 '''
 
-random_state = 1    # to allow reproduction of results
+random_state = 2    # to allow reproduction of results
 
 
 def replace_inf_with_nan(X):
@@ -315,8 +317,8 @@ def build_XGBooster_model(dataset, y):
     """
 
     # define model and hyperparameters
-    model = XGBRegressor()  #play with hyperparameters using a grid search across a range of values (or pipeline)
-    # model = XGBRegressor(n_estimators=50, max_depth=3, eta=0.075, subsample=0.5)
+    # model = XGBRegressor()  #play with hyperparameters using a grid search across a range of values (or pipeline)
+    model = XGBRegressor(n_estimators=50, max_depth=3, eta=0.075, subsample=0.5)
 
     # 6 repeats of 5-fold cross-validation, creating 30 samples of MSE
     cv = RepeatedKFold(n_splits=5, n_repeats=6, random_state=random_state)
@@ -328,6 +330,43 @@ def build_XGBooster_model(dataset, y):
     scores = np.absolute(scores)
 
     return scores, model
+
+
+def build_RandomForest_model(dataset, y):
+    """
+    Define a RandomForest Regression model and its evaluation method.
+    The evaluation is based on k-fold cross validation, where k is hardcoded to 5.
+    In order to gather enough data and look at the statistics of the evaluation procedure, this is repeated 6 times.
+    The metric is MSE.
+
+    Inputs:
+        1. the training dataset
+        2. the target
+        3. fixed random state (so output can be reproduced)
+    Returns:
+        1. Scores of the evaluation (30 of them)
+        2. The linear model
+    """
+
+    # define model and hyperparameters
+    model = RandomForestRegressor(n_estimators=50, max_depth=3, n_jobs=-1)
+
+
+    # 6 repeats of 5-fold cross-validation, creating 30 samples of MSE
+    cv = RepeatedKFold(n_splits=5, n_repeats=6, random_state=random_state)
+
+    # Evaluation
+    scores = cross_val_score(model, dataset, y, scoring='neg_mean_squared_error', cv=cv, n_jobs=-1)
+
+    # scores to be positive
+    scores = np.absolute(scores)
+
+    return scores, model
+
+
+
+
+
 
 # check if the model overfits the data
 def check_model_performance(selected_train_data_XGB, selected_train_data_linear, scores_reduced_XGB, scores_reduced_linear, model_XGB, model_linear, target):
@@ -418,11 +457,23 @@ def build_model_on_reduced_data(chosen_model, processed_training_data, target, p
 
     if chosen_model == 'XGB':
         # Select iportant features (XGBoost), build and run model
-        selected_train_data_XGB, selected_test_data_XGB, chosen_indices_XGB = select_features(XGBRegressor(), processed_training_data, target, processed_testing_data)
+        use_this_model = XGBRegressor()
+        # use_this_model = XGBRegressor(n_estimators=50, max_depth=3, eta=0.075, subsample=0.5)
+        # use_this_model = XGBRegressor(n_estimators=50, max_depth=3, tree_method='gpu_hist', early_stopping_rounds=2, eta=0.1, subsample=0.8)
+        # use_this_model = RandomForestRegressor(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
+        selected_train_data_XGB, selected_test_data_XGB, chosen_indices_XGB = select_features(use_this_model, processed_training_data, target, processed_testing_data)
         print('line 4: chosen indices XGB:              ', chosen_indices_XGB)
         scores_reduced_XGB, model_XGB = build_XGBooster_model(selected_train_data_XGB, target)
         model_XGB.fit(selected_train_data_XGB, target)
         return selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB
+    elif chosen_model == 'RandomForest':
+        # Select iportant features, build and run model
+        use_this_model = RandomForestRegressor(n_estimators=50, max_depth=3, random_state=42, n_jobs=-1)
+        selected_train_data, selected_test_data, chosen_indices = select_features(use_this_model, processed_training_data, target, processed_testing_data)
+        print('line 4: chosen indices RandomForest:              ', chosen_indices)
+        scores_reduced_RF, model_RF = build_RandomForest_model(selected_train_data, target)
+        model_RF.fit(selected_train_data, target)
+        return selected_train_data, model_RF, scores_reduced_RF, selected_test_data, chosen_indices
     elif chosen_model == 'linear':
         # Select iportant features (linear), build and run model
         selected_train_data_linear, selected_test_data_linear, chosen_indices_linear = select_features(LinearRegression(), processed_training_data, target, processed_testing_data)

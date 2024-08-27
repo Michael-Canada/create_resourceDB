@@ -54,12 +54,16 @@ jsonplus.prefer_compat()
 COLLECTION = "miso-se"
 GO_TO_GCLOUD = True
 DEBUG_ON = False
+NON_LINEAR_METHOD_TO_USE = "RandomForest"
+# NON_LINEAR_METHOD_TO_USE = "XGB"
+
 
 def _get_auth(env_var: str = "SELF"):
     return tuple(os.environ[env_var].split(":"))
 
 coefficients = pd.read_pickle("/Users/michael.simantov/Documents/generator_gas_prices/coefficients_NG_hub_name.pkl")
 intercepts = pd.read_pickle("/Users/michael.simantov/Documents/generator_gas_prices/intercepts.pkl")
+hydro_capacity_factor = pd.read_csv("/Users/michael.simantov/Documents/generator_analysis/clean_capacity_MISO.csv")
 
 AUTH = _get_auth()
 
@@ -998,8 +1002,8 @@ for category in ML_modeling_results.keys():
 
     # create models on reduced train datasets
     selected_train_data_linear, model_linear, scores_reduced_linear, selected_test_data_linear, chosen_indices_linear = economic_model_ML_funcs.build_model_on_reduced_data('linear', processed_training_data, target, processed_testing_data)
-    selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB = economic_model_ML_funcs.build_model_on_reduced_data('XGB', processed_training_data, target, processed_testing_data)
-
+    selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB = economic_model_ML_funcs.build_model_on_reduced_data(NON_LINEAR_METHOD_TO_USE, processed_training_data, target, processed_testing_data)
+    
     # keep the ML modeling results, to be used on different markets:
     # ML_modeling_results[category] = {'model_XGB': model_XGB, 'model_linear': model_linear, 'target_bias': target_bias, 'chosen_indices_XGB': chosen_indices_XGB, 'chosen_indices_linear': chosen_indices_linear, 'target_std': target_std, 'numeric_indices': numeric_indices, 'all_titles_of_features': all_titles_of_features}
 
@@ -1161,7 +1165,7 @@ for category in ML_modeling_results.keys():
 
         # create models on reduced train datasets
         selected_train_data_linear, model_linear, scores_reduced_linear, selected_test_data_linear, chosen_indices_linear = economic_model_ML_funcs.build_model_on_reduced_data('linear', processed_training_data, target, processed_testing_data)
-        selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB = economic_model_ML_funcs.build_model_on_reduced_data('XGB', processed_training_data, target, processed_testing_data)
+        selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB = economic_model_ML_funcs.build_model_on_reduced_data(NON_LINEAR_METHOD_TO_USE, processed_training_data, target, processed_testing_data)
 
         # keep the ML modeling results, to be used on different markets:
         # ML_modeling_results[category] = {'model_XGB': model_XGB, 'model_linear': model_linear, 'target_bias': target_bias, 'chosen_indices_XGB': chosen_indices_XGB, 'chosen_indices_linear': chosen_indices_linear, 'target_std': target_std, 'numeric_indices': numeric_indices, 'all_titles_of_features': all_titles_of_features}
@@ -1251,7 +1255,7 @@ for category in ML_modeling_results.keys():
 
         # create models on reduced train datasets
         selected_train_data_linear, model_linear, scores_reduced_linear, selected_test_data_linear, chosen_indices_linear = economic_model_ML_funcs.build_model_on_reduced_data('linear', processed_training_data, target, processed_testing_data)
-        selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB = economic_model_ML_funcs.build_model_on_reduced_data('XGB', processed_training_data, target, processed_testing_data)
+        selected_train_data_XGB, model_XGB, scores_reduced_XGB, selected_test_data_XGB, chosen_indices_XGB = economic_model_ML_funcs.build_model_on_reduced_data(NON_LINEAR_METHOD_TO_USE, processed_training_data, target, processed_testing_data)
 
         # keep the ML modeling results, to be used on different markets:
         # ML_modeling_results[category] = {'model_XGB': model_XGB, 'model_linear': model_linear, 'target_bias': target_bias, 'chosen_indices_XGB': chosen_indices_XGB, 'chosen_indices_linear': chosen_indices_linear, 'target_std': target_std, 'numeric_indices': numeric_indices, 'all_titles_of_features': all_titles_of_features}
@@ -1453,7 +1457,16 @@ test_CT = []
 test_GT = []
 test_ST = []
 cntr_of_generators_not_in_EIA = 0
+counter_of_hydros = 0
+counter_of_hydros_in_dfm_2 = 0
 for row in dfm_2.reset_index().itertuples():
+
+
+    # if row.energy_source_code in ['WAT', 'MWH'] and row.uid.replace(' ','') in hydro_capacity_factor.name.apply(lambda x: x.replace(' ', '')).values:
+    #     print(18)
+        
+    
+
 
     # if 'Brien'.lower() in row.uid.lower():
     #     print(18)
@@ -1599,7 +1612,14 @@ for row in dfm_2.reset_index().itertuples():
                 current_supplier_hub_data['coefficients'][hub_name] = coef
         current_supplier_hub_data['bias'] = intercepts.loc[row.plant_name].Value
         
-
+    # if we are dealing with a hydroelectric generator
+    current_supplier_capacity_factors = None
+    if row.energy_source_code in ['WAT', 'MWH'] and row.uid.replace(' ','') in hydro_capacity_factor.name.apply(lambda x: x.replace(' ', '')).values:
+        this_hydro_data = hydro_capacity_factor[hydro_capacity_factor['name'].apply(lambda x: x.replace(' ', '') == row.uid.replace(' ',''))]
+        current_supplier_capacity_factors = {'months': {}}
+        for month in this_hydro_data.columns[:12]:
+            current_supplier_capacity_factors['months'][month] = this_hydro_data[month].values[0]
+        
 
 
     generators = [
@@ -1638,8 +1658,11 @@ for row in dfm_2.reset_index().itertuples():
         },
         "gas_hub": {            
             # current_supplier_hub_data = {'coefficients': {'hub1':0.7, 'hub2':0.2, 'hub3':0.1}, 'bias': 3.0}   #example
-            "current_supplier_hub_data": current_supplier_hub_data   #zzz
-            
+            "current_supplier_hub_data": current_supplier_hub_data
+        },
+        "hydro_electric": {
+            # "current_supplier_capacity_factors" = {'months': {'1': 0.38, '2': 0.38, '3': 0.41, '4': 0.46, '5': 0.53, '6': 0.58, '7': 0.59, '8': 0.60, '9': 0.51, '10': 0.49, '11': 0.46, '12': 0.42}} # example
+            "current_supplier_capacity_factors": current_supplier_capacity_factors
         },
         "start_date": start_date,
         "end_date": end_date,
@@ -1710,7 +1733,6 @@ if False:
     # Apply the function to dfm_2
     dfm_2 = dfm_2.apply(replace_outliers, axis=1)
 
-ddddd = dfm_2.copy()
 
 if True:
     # Calculate the mean and standard deviation of the group
@@ -1742,7 +1764,7 @@ if True:
     # Apply the function to dfm_2
     dfm_2 = dfm_2.apply(replace_outliers, axis=1)
 
-print(ddddd)
+
 
 if True:
     # plot a histogram of the heat rate of all the dfm_2 rows where the energy_source_code is 'NG' and the prime_mover_code is 'GT'
