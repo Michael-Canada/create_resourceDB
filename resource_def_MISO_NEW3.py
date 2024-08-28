@@ -2252,7 +2252,6 @@ for row in dfm_2.reset_index().itertuples():
                 hydro_capacity_factor_data_found = True
                 break
         else:
-            print(18)
             pass
 
         if hydro_capacity_factor_data_found == True:
