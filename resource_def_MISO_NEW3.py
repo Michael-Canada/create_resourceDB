@@ -56,7 +56,7 @@ jsonplus.prefer_compat()
 
 COLLECTION = "miso-se"
 GO_TO_GCLOUD = False
-DEBUG_ON = True
+DEBUG_ON = False
 NON_LINEAR_METHOD_TO_USE = "RandomForest"
 # NON_LINEAR_METHOD_TO_USE = "XGB"
 
