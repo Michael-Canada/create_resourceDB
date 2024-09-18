@@ -1,3 +1,13 @@
+# differences between SPP and MISO:
+# 1. MISO has df_hc, which is heat-rate that comes from a different file, but MISO does not have it
+# 2. MISO uses historic data about generators to correct Pmax, but SPP does not do it
+# 3. MISO has hydroelectric capacity factor bu tSPP does not have that yet.
+# 4. In SPP, the heat-rate params (fitting_param_x  and  fitting_param_intercept) are corrected using the std of each of them, but in MISO only the fitting_param_x is corrected:
+# SPP:
+# if abs(row['fitting_param_x'] - median_x) > 2 * std_x or abs(row['fitting_param_intercept'] - median_intercept) > 2 * std_intercept:
+# MISO:
+# if abs(row["fitting_param_x"] - median_x) > 2 * std_x:
+
 # Order of operations:
 # 1. Run the scripts that are on 'Documents/generator_gas_pricing'
 # - run4.py (change the ISO_name to MISO or SWPP)
@@ -20,8 +30,8 @@
 # Environment: placebo_jupyter_env
 
 # find all cases of miso by the following, and then order them to find the latest one:
+# https://api1.marginalunit.com/reflow/spp-se/cases
 # https://api1.marginalunit.com/reflow/miso-se/cases
-
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -53,9 +63,9 @@ import economic_model_ML_funcs
 from verify_mapping import get_new_mapping
 
 jsonplus.prefer_compat()
-
-COLLECTION = "miso-se"
-GO_TO_GCLOUD = False
+ISO = "SPP"
+COLLECTION = f"{ISO.lower()}-se"
+GO_TO_GCLOUD = True
 DEBUG_ON = False
 NON_LINEAR_METHOD_TO_USE = "RandomForest"
 # NON_LINEAR_METHOD_TO_USE = "XGB"
@@ -73,12 +83,12 @@ if "michael.simantov" in sys.path[0]:
         "/Users/michael.simantov/Documents/generator_gas_prices/intercepts.pkl"
     )
     hydro_capacity_factor = pd.read_csv(
-        "/Users/michael.simantov/Documents/generator_analysis/clean_capacity_MISO.csv"
+        f"/Users/michael.simantov/Documents/generator_analysis/clean_capacity_{ISO}.csv"
     )
 else:
     coefficients = pd.read_pickle("./coefficients_NG_hub_name.pkl")
     intercepts = pd.read_pickle("./intercepts.pkl")
-    hydro_capacity_factor = pd.read_csv("./clean_capacity_MISO.csv")
+    hydro_capacity_factor = pd.read_csv(f"./clean_capacity_{ISO}.csv")
 
 
 AUTH = _get_auth()
@@ -96,21 +106,24 @@ def _get_dfm(url, auth=AUTH):
     return dfm
 
 
-list_of_missing_plants = [
-    "Cadiz Power Plant",
-    "Mattawoman Energy Center",
-    "O'Brien Wind",
-    "Washington Parish Energy Center",
-    "Minco Wind V, LLC",
-    "Wildcat Wind Farm II LLC`",
-    "Ripley Westfield Wind LLC",
-    "Mason Dixon Wind Farm",
-    "Majestic 2 Wind Farm",
-    "Alpaca",
-    "Pioneer Crossing Energy, LLC",
-    "Maidencreek Biomass Plant",
-    "Lake Area Landfill Gas Recovery",
-]
+if ISO == "MISO":
+    list_of_missing_plants = [
+        "Cadiz Power Plant",
+        "Mattawoman Energy Center",
+        "O'Brien Wind",
+        "Washington Parish Energy Center",
+        "Minco Wind V, LLC",
+        "Wildcat Wind Farm II LLC`",
+        "Ripley Westfield Wind LLC",
+        "Mason Dixon Wind Farm",
+        "Majestic 2 Wind Farm",
+        "Alpaca",
+        "Pioneer Crossing Energy, LLC",
+        "Maidencreek Biomass Plant",
+        "Lake Area Landfill Gas Recovery",
+    ]
+else:
+    list_of_missing_plants = []
 
 # list_of_missing_plants_with_start_dates  = ['Cadiz Power Plant', March 2016,
 # 'Mattawoman Energy Center',    Not working
@@ -126,7 +139,6 @@ list_of_missing_plants = [
 # 'Maidencreek Biomass Plant', Start: October 2008 - retired already but not clear when
 # 'Lake Area Landfill Gas Recovery, February 2024']
 
-# In[4]:
 
 # this_dir = os.path.dirname(os.path.abspath(__file__))
 if "michael.simantov" in sys.path[0]:
@@ -139,7 +151,7 @@ else:
 def find_files(directory):
     files = []
     for file in os.listdir(directory):
-        if file.startswith("all_knowledge_df_"):
+        if file.startswith(f"all_knowledge_df_{ISO.lower()}"):
             files.append(file)
     return files
 
@@ -166,38 +178,49 @@ df = clean_data(df)
 
 
 # in order to save cost of using the google cloud, we will download the data from the API and save it in a csv file
+file_name = f"{ISO.lower()}-se-generator.csv"
 if GO_TO_GCLOUD:
-    df_g_miso = _get_dfm(
-        f"https://api1.marginalunit.com/reflow/{COLLECTION}/generators"
-    )
-    df_g_miso.to_csv("miso-se-generator.csv", index=False)
+    df_g = _get_dfm(f"https://api1.marginalunit.com/reflow/{COLLECTION}/generators")
+    df_g.to_csv(file_name, index=False)
 else:
-    df_g_miso = pd.read_csv("miso-se-generator.csv")
+    df_g = pd.read_csv(file_name)
 
-
-# In[5]:
 
 # in order to save cost of using the google cloud, we will download the data from the API and save it in a csv file
+file_name = f"df_p_{ISO.lower()}.csv"
 if GO_TO_GCLOUD:
-    df_p_miso = pd.read_gbq(
-        """
-        SELECT
-        uid,
-        APPROX_QUANTILES(pmin, 100)[OFFSET(50)] as pmin_median,
-        APPROX_QUANTILES(pmax, 100)[OFFSET(50)] as pmax_median,
-        APPROX_QUANTILES(pmax, 100)[OFFSET(99)] as pmax_99_perc,
-        MAX(pmax) as pmax_max,
-        FROM `vocal-door-162221.pr_forecast.miso-se-generator-202408`
-        GROUP BY uid
-        ORDER BY pmax_median DESC
-        """
-    )
+    if ISO == "MISO":
+        df_p = pd.read_gbq(
+            """
+            SELECT
+            uid,
+            APPROX_QUANTILES(pmin, 100)[OFFSET(50)] as pmin_median,
+            APPROX_QUANTILES(pmax, 100)[OFFSET(50)] as pmax_median,
+            APPROX_QUANTILES(pmax, 100)[OFFSET(99)] as pmax_99_perc,
+            MAX(pmax) as pmax_max,
+            FROM `vocal-door-162221.pr_forecast.miso-se-generator-202408`
+            GROUP BY uid
+            ORDER BY pmax_median DESC
+            """
+        )
+    elif ISO == "SPP":
+        df_p = pd.read_gbq(
+            """
+            SELECT
+            uid,
+            APPROX_QUANTILES(pmin, 100)[OFFSET(50)] as pmin_median,
+            APPROX_QUANTILES(pmax, 100)[OFFSET(50)] as pmax_median,
+            APPROX_QUANTILES(pmax, 100)[OFFSET(99)] as pmax_99_perc,
+            MAX(pmax) as pmax_max,
+            FROM `vocal-door-162221.pr_forecast.spp-se-generator`
+            GROUP BY uid
+            ORDER BY pmax_median DESC
+            """
+        )
     # save the data in a csv file
-    df_p_miso.to_csv("df_p_miso.csv", index=False)
+    df_p.to_csv(file_name, index=False)
 else:
-    df_p_miso = pd.read_csv("df_p_miso.csv")
-
-# In[6]:
+    df_p = pd.read_csv(file_name)
 
 
 ####################################################### TEST - Start
@@ -228,226 +251,216 @@ else:
 
 # in order to save cost of using the google cloud, we will download the data from the API and save it in a csv file
 # if GO_TO_GCLOUD:
-#     df_map_miso = _get_dfm(
+#     df_map = _get_dfm(
 #         f"https://api1.marginalunit.com/rms/eia/generators/{COLLECTION}/generator-mappings"
 #     )
-#     df_map_miso.to_csv("df_map_miso.csv", index=False)
+#     df_map.to_csv("df_map.csv", index=False)
 # else:
-#     df_map_miso = pd.read_csv("df_map_miso.csv")
+#     df_map = pd.read_csv("df_map.csv")
 # Steven add new additional mapping and rms data sanity checking
-df_map_miso = get_new_mapping(
-    iso="MISO", use_mannual_override=True, use_additional_mapping=True
+df_map = get_new_mapping(
+    iso=ISO, use_mannual_override=True, use_additional_mapping=True
 )
 
-
-# add a row to df_map_miso with the following: generator_name = 'ORENTDRT ORENT_UNIT2', 'eia_utility_id' = 12341, eia_plant_code = 61077, eia_gen_id = 2
-df_map_miso = df_map_miso.append(
-    {
-        "generator_name": "ORENTDRT ORENT_UNIT2",
-        "eia_utility_id": 12341,
-        "eia_plant_code": 61077,
-        "eia_gen_id": 2,
-    },
-    ignore_index=True,
-)
-# Adding Adrien's found generators, 2024-08-09
-# df_map_miso = df_map_miso.append({'generator_name': 'KAMMER ML2', 'eia_utility_id': 22053, 'eia_plant_code': 3948, 'eia_gen_id': 2}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'KAMMER ML2', 'eia_utility_id': 22053, 'eia_plant_code': 3948, 'eia_gen_id': 1}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '924_TRIV GEN1_CC', 'eia_utility_id': 63601, 'eia_plant_code': 63931, 'eia_gen_id': 'GEN1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': '924_TRIV GEN1_CC', 'eia_utility_id': 63601, 'eia_plant_code': 63931, 'eia_gen_id': 'GEN2'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'GUERNSPS 31CC', 'eia_utility_id': 62806, 'eia_plant_code': 62949, 'eia_gen_id': 'GPS3'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'GUERNSPS 11CC', 'eia_utility_id': 62806, 'eia_plant_code': 62949, 'eia_gen_id': 'GPS1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'GUERNSPS 21CC', 'eia_utility_id': 62806, 'eia_plant_code': 62949, 'eia_gen_id': 'GPS2'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'CHENOWET FOXSQUSP', 'eia_utility_id': 57170, 'eia_plant_code': 67239, 'eia_gen_id': 'FOX01'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'LARAMIE BEPM', 'eia_utility_id': 1307, 'eia_plant_code': 6204, 'eia_gen_id': '1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'HANNIBAL LONGRDCC', 'eia_utility_id': 61762, 'eia_plant_code': 61322, 'eia_gen_id': 'HPPP1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'PSEGGLOB 5', 'eia_utility_id': 61136, 'eia_plant_code': 55503, 'eia_gen_id': 'ST1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'PSEGGLOB 6', 'eia_utility_id': 61136, 'eia_plant_code': 55503, 'eia_gen_id': 'CTG1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'PSEGGLOB 7', 'eia_utility_id': 61136, 'eia_plant_code': 55503, 'eia_gen_id': 'CTG2'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'PSEGGLOB 8', 'eia_utility_id': 61136, 'eia_plant_code': 55503, 'eia_gen_id': 'CTG3'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'HIBBMILL CTG-1', 'eia_utility_id': 60131, 'eia_plant_code': 60356, 'eia_gen_id': 'SFCT1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'HIBBMILL CTG-2', 'eia_utility_id': 60131, 'eia_plant_code': 60356, 'eia_gen_id': 'SFCT2'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'HIBBMILL STG-1', 'eia_utility_id': 60131, 'eia_plant_code': 60356, 'eia_gen_id': 'SFST1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'HIBBMILL STG-2', 'eia_utility_id': 60131, 'eia_plant_code': 60356, 'eia_gen_id': 'SFST2'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'HIBBMILL STG-2', 'eia_utility_id': 60131, 'eia_plant_code': 60356, 'eia_gen_id': 'SFST2'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'DEERCRK  DCS1', 'eia_utility_id': 1307, 'eia_plant_code': 56610, 'eia_gen_id': 1}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'DEERCRK  DCS1', 'eia_utility_id': 1307, 'eia_plant_code': 56610, 'eia_gen_id': 2}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'ST_FRAN STFRANCIS01', 'eia_utility_id': 924, 'eia_plant_code': 7604, 'eia_gen_id': 1}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'ST_FRAN STFRANCIS02', 'eia_utility_id': 924, 'eia_plant_code': 7604, 'eia_gen_id': 2}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'CHAPELLE TPLH_WIND', 'eia_utility_id': 56201, 'eia_plant_code': 63103, 'eia_gen_id': 'WTG'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'SUB1363 TRTL1', 'eia_utility_id': 14127, 'eia_plant_code': 64547, 'eia_gen_id': 2}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'SUB1363 TRTL1', 'eia_utility_id': 14127, 'eia_plant_code': 64547, 'eia_gen_id': 1}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'ALTAFARM AFARMWF', 'eia_utility_id': 63722, 'eia_plant_code': 64088, 'eia_gen_id': 'WT2'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'ROSEHIL SWEETLAND_WIND', 'eia_utility_id': 65553, 'eia_plant_code': 66496, 'eia_gen_id': 'SLW'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'DAKOTA PRARQUEEN_KCPL', 'eia_utility_id': 62010, 'eia_plant_code': 62488, 'eia_gen_id': 'WT'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'FLATLICK 1', 'eia_utility_id': 56558, 'eia_plant_code': 55401, 'eia_gen_id': 'CT1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'FLATLICK 2', 'eia_utility_id': 56558, 'eia_plant_code': 55401, 'eia_gen_id': 'CT2'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'FLATLICK 3', 'eia_utility_id': 56558, 'eia_plant_code': 55401, 'eia_gen_id': 'CT3'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'FLATLICK 4', 'eia_utility_id': 56558, 'eia_plant_code': 55401, 'eia_gen_id': 'CT4'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'FLATLICK 5', 'eia_utility_id': 56558, 'eia_plant_code': 55401, 'eia_gen_id': 'CT5'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '942_NELS GT3CT_1', 'eia_utility_id': 49893, 'eia_plant_code': 60387, 'eia_gen_id': 'GEN3'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': '942_NELS GT4CT_1', 'eia_utility_id': 49893, 'eia_plant_code': 60387, 'eia_gen_id': 'GEN4'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'FINLEY MADSNFSP', 'eia_utility_id': 65860, 'eia_plant_code': 66198, 'eia_gen_id': 'USMDF'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'RPMONE   1', 'eia_utility_id': 7004, 'eia_plant_code': 7872, 'eia_gen_id': 1}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'RPMONE   2', 'eia_utility_id': 7004, 'eia_plant_code': 7872, 'eia_gen_id': 2}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'RPMONE   3', 'eia_utility_id': 7004, 'eia_plant_code': 7872, 'eia_gen_id': 3}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '935_KEND KDLST-1', 'eia_utility_id': 57141, 'eia_plant_code': 55131, 'eia_gen_id': 'STG1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': '935_KEND KDLST-2', 'eia_utility_id': 57141, 'eia_plant_code': 55131, 'eia_gen_id': 'STG2'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': '935_KEND KDLST-3', 'eia_utility_id': 57141, 'eia_plant_code': 55131, 'eia_gen_id': 'STG3'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': '935_KEND KDLST-4', 'eia_utility_id': 57141, 'eia_plant_code': 55131, 'eia_gen_id': 'STG4'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'SHANKATK BELLFLSP', 'eia_utility_id': 62842, 'eia_plant_code': 65031, 'eia_gen_id': 'INBF1'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'CREEKWLK HONEYSSP', 'eia_utility_id': 62842, 'eia_plant_code': 65936, 'eia_gen_id': 'INHS1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'WILDCAT WILLOWSP', 'eia_utility_id': 56215, 'eia_plant_code': 63877, 'eia_gen_id': 'WBS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'GUNNROAD SCIOT1WF', 'eia_utility_id': 56215, 'eia_plant_code': 58780, 'eia_gen_id': 1}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'GUNNROAD SCIOT2WF', 'eia_utility_id': 56215, 'eia_plant_code': 58780, 'eia_gen_id': 1}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'MUSEVILL MAPLEWSP', 'eia_utility_id': 58468, 'eia_plant_code': 65319, 'eia_gen_id': 'MAPL'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'NUNDRWD WILD_SPRG_SLR', 'eia_utility_id': 62759, 'eia_plant_code': 67018, 'eia_gen_id': 'WLDSP'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'DAKOTA   PRARQUEEN_MPS', 'eia_utility_id': 62010, 'eia_plant_code': 62488, 'eia_gen_id': 'WT'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'E_FAYETT ARCHESP', 'eia_utility_id': 62842, 'eia_plant_code': 65402, 'eia_gen_id': 'ARCHE'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'PAULDNG3 PAUL3WF', 'eia_utility_id': 60258, 'eia_plant_code': 60470, 'eia_gen_id': 1}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '969_ECOG HIGHPTSP', 'eia_utility_id': 55918, 'eia_plant_code': 56805, 'eia_gen_id': 1}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'CAMPBLCO CAMPBLCO_WIND', 'eia_utility_id': 56769, 'eia_plant_code': 59655, 'eia_gen_id': 'CCWF1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'FOWLER1 FWLR1CWF', 'eia_utility_id': 55963, 'eia_plant_code': 56777, 'eia_gen_id': 'FIC'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'REDEYE   BEDFRFSP', 'eia_utility_id': 56769, 'eia_plant_code': 63549, 'eia_gen_id': 'WSS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'AXTON AXTONSP', 'eia_utility_id': 65658, 'eia_plant_code': 66635, 'eia_gen_id': 'ENX20'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '994_HILL WHITNYWF', 'eia_utility_id': 62103, 'eia_plant_code': 62606, 'eia_gen_id': 'WTHWP'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'DELANO SALTCTSP', 'eia_utility_id': 64607, 'eia_plant_code': 65302, 'eia_gen_id': 'SOLAR'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'CONTINEN BLUEHASP', 'eia_utility_id': 65364, 'eia_plant_code': 66249, 'eia_gen_id': 'GEN01'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'LONESMCK G6_UNIT', 'eia_utility_id': 1307, 'eia_plant_code': 57943, 'eia_gen_id': 6}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'GRANITF PALMERCREEK_WF', 'eia_utility_id': 61815, 'eia_plant_code': 62291, 'eia_gen_id': 'PCWF'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'HIGHMRWD HIGHMR_1_UNIT', 'eia_utility_id': 34721, 'eia_plant_code': 56092, 'eia_gen_id': 'GE15'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'EUFALA_D G1', 'eia_utility_id': 27470, 'eia_plant_code': 6419, 'eia_gen_id': 1}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'EUFALA_D G2', 'eia_utility_id': 27470, 'eia_plant_code': 6419, 'eia_gen_id': 2}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'EUFALA_D G3', 'eia_utility_id': 27470, 'eia_plant_code': 6419, 'eia_gen_id': 3}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'REUSENS  RE1', 'eia_utility_id': 57280, 'eia_plant_code': 3779, 'eia_gen_id': 1}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'REUSENS  RE2', 'eia_utility_id': 57280, 'eia_plant_code': 3779, 'eia_gen_id': 2}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'REUSENS  RE3', 'eia_utility_id': 57280, 'eia_plant_code': 3779, 'eia_gen_id': 3}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'REUSENS  RE4', 'eia_utility_id': 57280, 'eia_plant_code': 3779, 'eia_gen_id': 4}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'REUSENS  RE5', 'eia_utility_id': 57280, 'eia_plant_code': 3779, 'eia_gen_id': 5}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '123_MARE MARENGBS', 'eia_utility_id': 62707, 'eia_plant_code': 62856, 'eia_gen_id': 'MBSS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'DKR_I_II DKR_I_II', 'eia_utility_id': 17650, 'eia_plant_code': 62943, 'eia_gen_id': 'GEN1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'LLKSOL G1', 'eia_utility_id': 65676, 'eia_plant_code': 66649, 'eia_gen_id': 'LLS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'FVWSOL G1', 'eia_utility_id': 65981, 'eia_plant_code': 67075, 'eia_gen_id': 'FFOR1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'WEVER J1734', 'eia_utility_id': 9417, 'eia_plant_code': 67538, 'eia_gen_id': 'PV1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'QTZSOL G1', 'eia_utility_id': 65946, 'eia_plant_code': 67038, 'eia_gen_id': 'QRTZ'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'ELIZBET G1', 'eia_utility_id': 65281, 'eia_plant_code': 66111, 'eia_gen_id': 'US199'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'WCSOL PV1', 'eia_utility_id': 65405, 'eia_plant_code': 66282, 'eia_gen_id': 'PV1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'PARISSLR PAS_ESR1', 'eia_utility_id': 20847, 'eia_plant_code': 65967, 'eia_gen_id': 'PSLR2'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'RAGSOL G1', 'eia_utility_id': 65348, 'eia_plant_code': 66240, 'eia_gen_id': 'GEN01'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'LIBSOL G1', 'eia_utility_id': 65874, 'eia_plant_code': 67159, 'eia_gen_id': 'LIBCO'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'PRMSOL G1', 'eia_utility_id': 65648, 'eia_plant_code': 66625, 'eia_gen_id': 78661}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'HVGSOL G1', 'eia_utility_id': 65650, 'eia_plant_code': 66623, 'eia_gen_id': 'HGS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'BGLSOL G1', 'eia_utility_id': 66001, 'eia_plant_code': 67104, 'eia_gen_id': 'BAYOU'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'FILERCTY FILERCTY_MR', 'eia_utility_id': 18414, 'eia_plant_code': 50835, 'eia_gen_id': 'GEN1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '913_BLOO BLOOM2WF', 'eia_utility_id': 49893, 'eia_plant_code': 63988, 'eia_gen_id': 'GEN1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': '980_WALN WALNT2WF', 'eia_utility_id': 59359, 'eia_plant_code': 58694, 'eia_gen_id': 1}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'FREM_A   8', 'eia_utility_id': 6779, 'eia_plant_code': 2240, 'eia_gen_id': 8}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'FREM_G   1', 'eia_utility_id': 6779, 'eia_plant_code': 2240, 'eia_gen_id': '5OT'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'BOKESCR UNIONSP', 'eia_utility_id': 57416, 'eia_plant_code': 64660, 'eia_gen_id': 'AUS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'ORAORA   ORAORASP', 'eia_utility_id': 65588, 'eia_plant_code': 66545, 'eia_gen_id': 'MMTHS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'NBENDW NTHBND_WIND', 'eia_utility_id': 65929, 'eia_plant_code': 67002, 'eia_gen_id': 'NBEND'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'BUCKSKIN ROSSCOSP', 'eia_utility_id': 64673, 'eia_plant_code': 65343, 'eia_gen_id': 'ROSS'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'KIRK UNIONRSP', 'eia_utility_id': 50123, 'eia_plant_code': 65338, 'eia_gen_id': 'UNIS1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'STEUBENV STEUBNSP', 'eia_utility_id': 66061, 'eia_plant_code': 66657, 'eia_gen_id': 'STEUB'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'PAYNE1 TIMBERSP', 'eia_utility_id': 65365, 'eia_plant_code': 66250, 'eia_gen_id': 'GEN01'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'PAULDNG4 PAUL42WF', 'eia_utility_id': 56936, 'eia_plant_code': 57620, 'eia_gen_id': 'GEN1'}, ignore_index=True)
-
-# df_map_miso = df_map_miso.append({'generator_name': 'ELKINS   ELKINS', 'eia_utility_id': 807, 'eia_plant_code': 56489, 'eia_gen_id': 'A'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'ELKINS   ELKINS', 'eia_utility_id': 807, 'eia_plant_code': 56489, 'eia_gen_id': 'B'}, ignore_index=True)
-# df_map_miso = df_map_miso.append({'generator_name': 'ELKINS   ELKINS', 'eia_utility_id': 807, 'eia_plant_code': 56489, 'eia_gen_id': 'C'}, ignore_index=True)
-
-
-############### END - Adrien CSV ####################
-if "michael.simantov" in sys.path[0]:
-    df_hc = pd.read_csv(
-        "/Users/michael.simantov/Downloads/unit_heat_input_curve_2024-04-11-MISO.csv"
+if ISO == "MISO":
+    # add a row to df_map with the following: generator_name = 'ORENTDRT ORENT_UNIT2', 'eia_utility_id' = 12341, eia_plant_code = 61077, eia_gen_id = 2
+    df_map = df_map.append(
+        {
+            "generator_name": "ORENTDRT ORENT_UNIT2",
+            "eia_utility_id": 12341,
+            "eia_plant_code": 61077,
+            "eia_gen_id": 2,
+        },
+        ignore_index=True,
     )
-else:
-    df_hc = pd.read_csv("./unit_heat_input_curve_2024-04-11-MISO.csv")
+    # Adding Adrien's found generators, 2024-08-09
+    # df_map = df_map.append({'generator_name': 'ELKINS   ELKINS', 'eia_utility_id': 807, 'eia_plant_code': 56489, 'eia_gen_id': 'B'}, ignore_index=True)
+    # df_map = df_map.append({'generator_name': 'ELKINS   ELKINS', 'eia_utility_id': 807, 'eia_plant_code': 56489, 'eia_gen_id': 'C'}, ignore_index=True)
+
+elif ISO == "SPP":
+    # add a row to df_map with the following: generator_name = 'ORENTDRT ORENT_UNIT2', 'eia_utility_id' = 12341, eia_plant_code = 61077, eia_gen_id = 2
+    df_map = df_map.append(
+        {
+            "generator_name": "ORENTDRT ORENT_UNIT2",
+            "eia_utility_id": 12341,
+            "eia_plant_code": 61077,
+            "eia_gen_id": 2,
+        },
+        ignore_index=True,
+    )
+    # Adding Steven's found generators, 2024-00-12
+    # fmt: off
+    df_map = df_map.append({'generator_name': 'BCYSOL 34.5 15 G3 UN', 'eia_utility_id': 64788, 'eia_plant_code': 65483, 'eia_gen_id': 'BIGC1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'BCYSOL 34.5 16 G1 UN', 'eia_utility_id': 64788, 'eia_plant_code': 65483, 'eia_gen_id': 'BIGC1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'BCYSOL 34.5 6 G2 UN', 'eia_utility_id': 64788, 'eia_plant_code': 65483, 'eia_gen_id': 'BIGC1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'BELHEL 230 5 T3 UN', 'eia_utility_id': 1182, 'eia_plant_code': 10319, 'eia_gen_id': 'GEN2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'BELHEL 230 T1 T1 UN', 'eia_utility_id': 1182, 'eia_plant_code': 10319, 'eia_gen_id': 'GEN2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'BELHEL 230 T2 T2 UN', 'eia_utility_id': 1182, 'eia_plant_code': 10319, 'eia_gen_id': 'GEN2'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'CHEMRD 138 CTG CTG1B UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GT1B'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'CHEMRD 138 CTGA CTG1A UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GT1A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'CHEMRD 138 STG STG UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GT1B'}, ignore_index=True)
 
 
-# In[ ]:
+    df_map = df_map.append({'generator_name': 'CLSOL 34.5 12 G1 UN', 'eia_utility_id': 65315, 'eia_plant_code': 66185, 'eia_gen_id': 'GEN1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'COLSTN 138 31 COLCTY_COLSTN4 UN', 'eia_utility_id': 65315, 'eia_plant_code': 66185, 'eia_gen_id': 'GEN1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'COW 138 CECO CONCECO UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GEN3'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'COW 138 CECO CONCECO UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'ST1A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'COW 138 CECO CONCECO UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GT1B'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'COW 138 CECO CONCECO UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GT1A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'COW 138 CECO CONCECO UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GEN1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'COW 138 CPK CONCPK UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GEN3'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'COW 138 SUP CONCSUP UN', 'eia_utility_id': 57160, 'eia_plant_code': 10789, 'eia_gen_id': 'GEN3'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'DELSOL 34.5 16Z EQ_UN_16 UN', 'eia_utility_id': 62161, 'eia_plant_code': 66759, 'eia_gen_id': 'DELTA'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 AT DOWCHEM-ST4 UN', 'eia_utility_id': 5347, 'eia_plant_code': 52006, 'eia_gen_id': 'GEN4'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 AU DOWCHEM-ST3 UN', 'eia_utility_id': 5347, 'eia_plant_code': 52006, 'eia_gen_id': 'GEN3'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 AV DOWCHEM-ST2 UN', 'eia_utility_id': 5347, 'eia_plant_code': 52006, 'eia_gen_id': 'GEN2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 AW DOWCHEM-ST1 UN', 'eia_utility_id': 5347, 'eia_plant_code': 52006, 'eia_gen_id': 'GEN1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 AX DOWCHEM-GT200 UN', 'eia_utility_id': 5347, 'eia_plant_code': 52006, 'eia_gen_id': 'GEN6'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 AY DOWCHEM-GT100 UN', 'eia_utility_id': 5347, 'eia_plant_code': 52006, 'eia_gen_id': 'GEN5'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'DOWMTR 14.4 BA DOWCHEM-SC400 UN', 'eia_utility_id': 5347, 'eia_plant_code': 55419, 'eia_gen_id': 'G500'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 230 CHEM DOWCHEMPK UN', 'eia_utility_id': 5347, 'eia_plant_code': 55419, 'eia_gen_id': 'G500'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'DOWMTR 230 GSUP DOWCHEMSUP UN', 'eia_utility_id': 5347, 'eia_plant_code': 55419, 'eia_gen_id': 'G800'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'DRVRSOL 34.5 42 G1 UN', 'eia_utility_id': 62842, 'eia_plant_code': 65736, 'eia_gen_id': 'AKDR1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'EAGSOL 34.5 G1 G1 UN', 'eia_utility_id': 61677, 'eia_plant_code': 61646, 'eia_gen_id': 'LA3WB'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'ENCO 230 GC GC UN', 'eia_utility_id': 11241, 'eia_plant_code': 1381, 'eia_gen_id': '1A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'ENCO 230 GC GC UN', 'eia_utility_id': 11241, 'eia_plant_code': 1381, 'eia_gen_id': '2A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'ENCO 230 GC GC UN', 'eia_utility_id': 11241, 'eia_plant_code': 1381, 'eia_gen_id': '3A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'ENCO 230 GC GC UN', 'eia_utility_id': 11241, 'eia_plant_code': 1391, 'eia_gen_id': '5A'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'FORMOS 13.8 G1 G_1 UN', 'eia_utility_id': 6564, 'eia_plant_code': 54518, 'eia_gen_id': 'GT1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'GDYRCH 69 G1 G_1 UN', 'eia_utility_id': 7375, 'eia_plant_code': 54321, 'eia_gen_id': 'N802'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'GDYRCH 69 G1 G_1 UN', 'eia_utility_id': 7375, 'eia_plant_code': 54321, 'eia_gen_id': '2N80'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'GDYRCH 69 G1 G_1 UN', 'eia_utility_id': 7375, 'eia_plant_code': 54321, 'eia_gen_id': 'N803'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'GDYRCH 69 G1 G_1 UN', 'eia_utility_id': 7375, 'eia_plant_code': 54321, 'eia_gen_id': 'N804'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'GDYRCH 69 G1 G_1 UN', 'eia_utility_id': 7375, 'eia_plant_code': 54321, 'eia_gen_id': '3N80'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'GOODWN 115 10 G1 UN', 'eia_utility_id': 6081, 'eia_plant_code': 61262, 'eia_gen_id': 'STGRT'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'HAPSOL 34.5 10 G1 UN', 'eia_utility_id': 62842, 'eia_plant_code': 63766, 'eia_gen_id': 'ARHA1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'HINDS2 230 1 GT3 UN', 'eia_utility_id': 12685, 'eia_plant_code': 55218, 'eia_gen_id': 'H04BS'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'HUNTS1 13.8 101 G1 UN', 'eia_utility_id': 30052, 'eia_plant_code': 54637, 'eia_gen_id': 'GCG1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'HUNTS1 13.8 102 G2 UN', 'eia_utility_id': 30052, 'eia_plant_code': 54637, 'eia_gen_id': 'GCG2'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'HVGSOL 34.5 UN G1 UN', 'eia_utility_id': 65650, 'eia_plant_code': 66623, 'eia_gen_id': 'HGS'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'L_GPSY 22 25 G3 UN', 'eia_utility_id': 11241, 'eia_plant_code': 1402, 'eia_gen_id': '3'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'LIBSOL 34.5 9 G1 UN', 'eia_utility_id': 65874, 'eia_plant_code': 67159, 'eia_gen_id': 'LIBCO'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'LKCHAR 21 CTGA CTG_1A UN', 'eia_utility_id': 11241, 'eia_plant_code': 60927, 'eia_gen_id': '1A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'LST 230 UNLS LST_4GA UN', 'eia_utility_id': 11241, 'eia_plant_code': 1391, 'eia_gen_id': '4A'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'MONTPS 21 22 CT_1B UN', 'eia_utility_id': 55937, 'eia_plant_code': 60925, 'eia_gen_id': '1B'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'MONTPS 21 26 CT_1A UN', 'eia_utility_id': 55937, 'eia_plant_code': 60925, 'eia_gen_id': '1A'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 21 G1 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 22 G2 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 23 G3 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 25 G4 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 26 G5 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 28 G6 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'NOPS 13.8 29 G7 UN', 'eia_utility_id': 13478, 'eia_plant_code': 60928, 'eia_gen_id': '1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'NPTSOL 34.5 14 G1 UN', 'eia_utility_id': 65276, 'eia_plant_code': 66112, 'eia_gen_id': 'U1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'OKRSOL 34.5 7 G1 UN', 'eia_utility_id': 64904, 'eia_plant_code': 66193, 'eia_gen_id': 'OAKRG'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'OUACH 500 G1 G1 UN', 'eia_utility_id': 11241, 'eia_plant_code': 55467, 'eia_gen_id': 'CTG1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OUACH 500 G1 G1 UN', 'eia_utility_id': 11241, 'eia_plant_code': 55467, 'eia_gen_id': 'STG1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OUACH 500 G1 G2 UN', 'eia_utility_id': 11241, 'eia_plant_code': 55467, 'eia_gen_id': 'CTG2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OUACH 500 G1 G2 UN', 'eia_utility_id': 11241, 'eia_plant_code': 55467, 'eia_gen_id': 'STG2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OUACH 500 G1 G3 UN', 'eia_utility_id': 11241, 'eia_plant_code': 55467, 'eia_gen_id': 'CTG3'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OUACH 500 G1 G3 UN', 'eia_utility_id': 11241, 'eia_plant_code': 55467, 'eia_gen_id': 'STG3'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'OXBSOL 34.5 27 G1 UN', 'eia_utility_id': 62842, 'eia_plant_code': 65030, 'eia_gen_id': 'LAVE1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OXBSOL 34.5 49 G2 UN', 'eia_utility_id': 62842, 'eia_plant_code': 65030, 'eia_gen_id': 'LAVE2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'OXBSOL 34.5 50 G3 UN', 'eia_utility_id': 62842, 'eia_plant_code': 65030, 'eia_gen_id': 'LAVE3'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'PELICN 138 G1 G1 UN', 'eia_utility_id': 39347, 'eia_plant_code': 56603, 'eia_gen_id': 'SJC1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'PELICN 138 G2 G2 UN', 'eia_utility_id': 39347, 'eia_plant_code': 56603, 'eia_gen_id': 'SJC2'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'PLUM17 24 G1E G1E UN', 'eia_utility_id': 58905, 'eia_plant_code': 56456, 'eia_gen_id': 'STG1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'PLUM17 24 G1Z EQ_UN_G1 UN', 'eia_utility_id': 58905, 'eia_plant_code': 56456, 'eia_gen_id': 'STG1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'PRSOL 34.5 20 G1 UN', 'eia_utility_id': 65347, 'eia_plant_code': 66239, 'eia_gen_id': 'GEN01'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'RAGSOL 34.5 14 G1 UN', 'eia_utility_id': 65348, 'eia_plant_code': 66240, 'eia_gen_id': 'GEN01'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'REP 13.8 102 G1 UN', 'eia_utility_id': 50129, 'eia_plant_code': 10612, 'eia_gen_id': 'GEN1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'REP 13.8 103 G2 UN', 'eia_utility_id': 50129, 'eia_plant_code': 10612, 'eia_gen_id': 'GEN2'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'SERSOL 34.5 13 G1 UN', 'eia_utility_id': 62109, 'eia_plant_code': 62617, 'eia_gen_id': 'SEABT'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'SFRSOL 34.5 G1 G1 UN', 'eia_utility_id': 62109, 'eia_plant_code': 62617, 'eia_gen_id': 'SEARC'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'STCHAR 21 85 CT_1B UN', 'eia_utility_id': 11241, 'eia_plant_code': 60926, 'eia_gen_id': '1B'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'STCHAR 21 91 CT_1A UN', 'eia_utility_id': 11241, 'eia_plant_code': 60926, 'eia_gen_id': '1A'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'STEELH 34.5 14 G1 UN', 'eia_utility_id': 64904, 'eia_plant_code': 66000, 'eia_gen_id': 'DLTA'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'SWAR16 138 5 G1 UN', 'eia_utility_id': 39347, 'eia_plant_code': 58645, 'eia_gen_id': 'RCT1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'SWAR16 138 5 G1 UN', 'eia_utility_id': 39347, 'eia_plant_code': 58645, 'eia_gen_id': 'RCT2'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'SWAR16 138 5 G1 UN', 'eia_utility_id': 39347, 'eia_plant_code': 58645, 'eia_gen_id': 'RCT3'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'UMBSOL 34.5 4 G1 UN', 'eia_utility_id': 65865, 'eia_plant_code': 66954, 'eia_gen_id': '23001'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'UNCARB 230 18 UCB-GT1 UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'UNCARB 230 19 UCB-STG UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'UNCARB 230 21 UCB-GT2 UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'UNCARB 230 D UCB-CSTG UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'UNCARB 230 MUN2 UCBSUP UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'UNCARB 230 MUN3 UCBECO UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'UNCARB 230 UCB UCB UN', 'eia_utility_id': 13914, 'eia_plant_code': 55089, 'eia_gen_id': 'ST1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'UNIONP 500 G1C G1C UN', 'eia_utility_id': 814, 'eia_plant_code': 55380, 'eia_gen_id': 'STG1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'VFWPRK 34.5 103 GENA UN', 'eia_utility_id': 1357, 'eia_plant_code': 55122, 'eia_gen_id': 'UN1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'VFWPRK 34.5 104 GENB UN', 'eia_utility_id': 1357, 'eia_plant_code': 55122, 'eia_gen_id': 'UN2'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'WBSOL 34.5 G1 G1 UN', 'eia_utility_id': 66229, 'eia_plant_code': 67504, 'eia_gen_id': 'WN1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'WCSOL 34.5 2 PV1 UN', 'eia_utility_id': 807, 'eia_plant_code': 66282, 'eia_gen_id': 'PV1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'WDFSOL 34.5 15 G1 UN', 'eia_utility_id': 65411, 'eia_plant_code': 66369, 'eia_gen_id': 'WDFL'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'WMPSOL 34.5 G1 G1 UN', 'eia_utility_id': 64788, 'eia_plant_code': 65483, 'eia_gen_id': 'BIGC1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'WODSTK 13.8 103 G1 UN', 'eia_utility_id': 1182, 'eia_plant_code': 10319, 'eia_gen_id': 'GEN1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'WODSTK 13.8 106 G2 UN', 'eia_utility_id': 1182, 'eia_plant_code': 10319, 'eia_gen_id': 'GEN2'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'DKR_I_II 345 3100 DKR_I_II UN', 'eia_utility_id': 56201, 'eia_plant_code': 63102, 'eia_gen_id': 'WTG'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'TTNKARDG 34.5 9000 TTNKARDG_JOU UN', 'eia_utility_id': 63897, 'eia_plant_code': 61046, 'eia_gen_id': 'WT1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'ASH2 230 4001 ASH2_MPC_UNIT UN', 'eia_utility_id': 56414, 'eia_plant_code': 57121, 'eia_gen_id': '1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'HOOT_LK 34.5 8002 HOOTLAKE_SOLAR UN', 'eia_utility_id': 14232, 'eia_plant_code': 65066, 'eia_gen_id': '1'}, ignore_index=True)
+
+    df_map = df_map.append({'generator_name': 'ASH2 230 4003 ASH2_GRE_UNIT UN', 'eia_utility_id': 56414, 'eia_plant_code': 57121, 'eia_gen_id': '1'}, ignore_index=True)
+    df_map = df_map.append({'generator_name': 'ASH2 230 4002 M_POWOTP_UNIT UN', 'eia_utility_id': 56414, 'eia_plant_code': 57121, 'eia_gen_id': '1'}, ignore_index=True)
+
+    # fmt: on
+
+    ############### END - Adrien CSV ####################
+
+if ISO == "MISO":
+    if "michael.simantov" in sys.path[0]:
+        df_hc = pd.read_csv(
+            "/Users/michael.simantov/Downloads/unit_heat_input_curve_2024-04-11-MISO.csv"
+        )
+    else:
+        df_hc = pd.read_csv("./unit_heat_input_curve_2024-04-11-MISO.csv")
 
 
 # TO BE UPDATED FOR MISO
 if "michael.simantov" in sys.path[0]:
     with open(
-        "/Users/michael.simantov/Documents/mu-power-plant-economic-modeling/economic_modeling/resourcedb/2024-01-16/resources_epa.json",
-        "r",
+        f"/Users/michael.simantov/Documents/resources_{ISO}_epa.json", "r"
     ) as fdesc:
         epa_eia_mapping = json.load(fdesc)
 else:
-    with open(
-        "/Users/steven.zhou/documents/mu-power-plant-economic-modeling/economic_modeling/resourcedb/2024-01-16/resources_epa.json",
-        "r",
-    ) as fdesc:
+    with open(f"./resources_{ISO}_epa.json", "r") as fdesc:
         epa_eia_mapping = json.load(fdesc)
 
 records = [
@@ -462,71 +475,51 @@ records = [
 
 df_eia_epa = pd.DataFrame(records)
 
-
-# In[ ]:
-
-
 # in order to save cost of using the google cloud, we will download the data from the API and save it in a csv file
+file_name = f"df_eia_{ISO.lower()}.csv"
 if GO_TO_GCLOUD:
-    df_eia_miso = _get_dfm(
+    df_eia = _get_dfm(
         "https://api1.marginalunit.com/misc-data/eia/generators/monthly?columns=plant_id,plant_name,plant_state,generator_id,energy_source_code,prime_mover_code,operating_month,operating_year,latitude,longitude,retirement_month,retirement_year,planned_operation_month,planned_operation_year,net_summer_capacity_mw"
     )
-    df_eia_miso.to_csv("df_eia_miso.csv", index=False)
+    df_eia.to_csv(file_name, index=False)
 else:
-    df_eia_miso = pd.read_csv("df_eia_miso.csv")
+    df_eia = pd.read_csv(file_name)
 
-
-# In[ ]:
-
-
-# add a row to df_map_miso with the following: generator_name = 'ORENTDRT ORENT_UNIT2', 'eia_utility_id' = 12341, eia_plant_code = 61077, eia_gen_id = 2
-# df_g_miso = df_g_miso.append({'uid': 'ORENTDRT ORENT_UNIT2', 'earliest_appearance': 'miso_se_20190901-0000_AREVA', 'latest_appearance': 'miso_se_20240627-1800_AREVA', 'latest_area': 'MEC', 'latest_zone':'MEC MEC'}, ignore_index=True)
 
 dfm = pd.merge(
-    df_g_miso.set_index("uid", verify_integrity=True),
-    df_p_miso.set_index("uid", verify_integrity=True),
+    df_g.set_index("uid", verify_integrity=True),
+    df_p.set_index("uid", verify_integrity=True),
     left_index=True,
     right_index=True,
 ).sort_values("pmax_median", ascending=False)
 
 
-# In[ ]:
-
-# find examples of duplicated rows in df_map_miso
-# df_map_miso[df_map_miso.duplicated(subset=['eia_plant_code', 'eia_gen_id'], keep=False)].sort_values(['eia_plant_code', 'eia_gen_id'])
-
-
-# merge only the column 'net_summer_capacity_mw' from df_eia_miso to df_map_miso based on df_map_miso['eia_plant_code']== and df_eia_miso['plant_id'] and df_map_miso['eia_gen_id']== and df_eia_miso['generator_id']
-columns_to_keep = df_map_miso.columns.tolist() + ["net_summer_capacity_mw"]
-df_map_miso = pd.merge(
-    df_map_miso,
-    df_eia_miso,
+# merge only the column 'net_summer_capacity_mw' from df_eia to df_map based on df_map['eia_plant_code']== and df_eia['plant_id'] and df_map['eia_gen_id']== and df_eia['generator_id']
+columns_to_keep = df_map.columns.tolist() + ["net_summer_capacity_mw"]
+df_map = pd.merge(
+    df_map,
+    df_eia,
     left_on=["eia_plant_code", "eia_gen_id"],
     right_on=["plant_id", "generator_id"],
     how="left",
 )
-df_map_miso = df_map_miso[columns_to_keep]
+df_map = df_map[columns_to_keep]
 
-# add to df_map_miso a column that is named 'agg' and its value is the sum of all the net_summer_capacity_mw values that have the same generator_name
-df_map_miso["agg"] = df_map_miso.groupby("generator_name")[
-    "net_summer_capacity_mw"
-].transform("sum")
-df_map_miso.drop(columns=["net_summer_capacity_mw"], inplace=True)
-df_map_miso.rename(columns={"agg": "net_summer_capacity_mw"}, inplace=True)
+# add to df_map a column that is named 'agg' and its value is the sum of all the net_summer_capacity_mw values that have the same generator_name
+df_map["agg"] = df_map.groupby("generator_name")["net_summer_capacity_mw"].transform(
+    "sum"
+)
+df_map.drop(columns=["net_summer_capacity_mw"], inplace=True)
+df_map.rename(columns={"agg": "net_summer_capacity_mw"}, inplace=True)
 
-# set the value of net_summer_capacity_mw to 400.0 where 'generator_name' = 'ORENTDRT ORENT_UNIT2' and 'eia_gen_id' = 2:
-# df_map_miso.loc[(df_map_miso.generator_name == 'ORENTDRT ORENT_UNIT2') & (df_map_miso.eia_gen_id == 2), 'net_summer_capacity_mw'] = 400.0
 
 dfm = pd.merge(
     dfm,
-    df_map_miso.groupby("generator_name").first(),
+    df_map.groupby("generator_name").first(),
     left_index=True,
     right_index=True,
     how="left",
 ).sort_values("pmax_median", ascending=False)
-
-
-# In[ ]:
 
 
 dfm = pd.merge(
@@ -539,26 +532,24 @@ dfm = pd.merge(
 dfm.epa_generator_id = dfm.epa_generator_id.fillna(dfm.eia_gen_id)
 
 
-# In[ ]:
+if ISO == "MISO":
+    dfm = pd.merge(
+        dfm,
+        df_hc.set_index(["orispl", "unit"], verify_integrity=True)[
+            ["fitting_param_x", "fitting_param_intercept"]
+        ],
+        left_on=["eia_plant_code", "epa_generator_id"],
+        right_index=True,
+        how="left",
+    )
+elif ISO == "SPP":
+    dfm["fitting_param_x"] = 0.0
+    dfm["fitting_param_intercept"] = 0.0
 
 
 dfm = pd.merge(
     dfm,
-    df_hc.set_index(["orispl", "unit"], verify_integrity=True)[
-        ["fitting_param_x", "fitting_param_intercept"]
-    ],
-    left_on=["eia_plant_code", "epa_generator_id"],
-    right_index=True,
-    how="left",
-)
-
-
-# In[ ]:
-
-
-dfm = pd.merge(
-    dfm,
-    df_eia_miso[~df_eia_miso.plant_id.isnull()].set_index(
+    df_eia[~df_eia.plant_id.isnull()].set_index(
         ["plant_id", "generator_id"], verify_integrity=True
     ),
     left_on=["eia_plant_code", "eia_gen_id"],
@@ -570,7 +561,6 @@ dfm = pd.merge(
 dfm.drop(columns=["net_summer_capacity_mw_y"], inplace=True)
 dfm.rename(columns={"net_summer_capacity_mw_x": "net_summer_capacity_mw"}, inplace=True)
 
-# In[ ]:
 
 if False:
     # plotting dfm.pmax_99_perc vs. dfm.net_summer_capacity_mw where net_summer_capacity_mw is not null
@@ -586,7 +576,7 @@ if False:
     plt.show()
 
 
-# replace dfm.pmax_99_perc with dfm.net_summer_capacity_mw where net_summer_capacity_mw is not null and pmax_99_perc is not null and net_summer_capacity_mw < dfm.pmax_99_perc and energy_source_code is not in ['WAT','H2O']
+# replace dfm.pmax_99_perc with dfm.net_summer_capacity_mw where net_summer_capacity_mw is not null and pmax_99_perc is not null and net_summer_capacity_mw < dfm.pmax_99_perc and energy_source_code is not in ['WAT','SUN']
 dfm.loc[
     ~dfm.net_summer_capacity_mw.isnull()
     & ~dfm.pmax_99_perc.isnull()
@@ -605,62 +595,115 @@ if not DEBUG_ON:
     dfm.drop(columns=["net_summer_capacity_mw"], inplace=True)
 
 # 1) Remove generators that we have not seen in more than 1 year
-dfm = dfm[dfm.latest_appearance >= "miso_se_20230101-1800_AREVA"]
+if ISO == "MISO":
+    dfm = dfm[dfm.latest_appearance >= "miso_se_20230101-1800_AREVA"]
+elif ISO == "SPP":
+    dfm = dfm[dfm.latest_appearance >= "stateestimator_20230101"]
 
+if ISO == "MISO":
+    # Manually adding missing data for plants
+    dfm.loc[dfm.plant_name == "Cadiz Power Plant", "operating_month"] = 3
+    dfm.loc[dfm.plant_name == "Cadiz Power Plant", "operating_year"] = 2016
+    dfm.loc[dfm.plant_name == "Washington Parish Energy Center", "operating_month"] = 11
+    dfm.loc[dfm.plant_name == "Washington Parish Energy Center", "operating_year"] = (
+        2020
+    )
+    dfm.loc[dfm.plant_name == "Minco Wind V, LLC", "operating_month"] = 12
+    dfm.loc[dfm.plant_name == "Minco Wind V, LLC", "operating_year"] = 2018
+    dfm.loc[dfm.plant_name == "Majestic 2 Wind Farm", "operating_month"] = 8
+    dfm.loc[dfm.plant_name == "Majestic 2 Wind Farm", "operating_year"] = 2012
+    dfm.loc[dfm.plant_name == "Alpaca", "operating_month"] = 4
+    dfm.loc[dfm.plant_name == "Alpaca", "operating_year"] = 2017
+    dfm.loc[dfm.plant_name == "Pioneer Crossing Energy, LLC", "operating_month"] = 10
+    dfm.loc[dfm.plant_name == "Pioneer Crossing Energy, LLC", "operating_year"] = 2008
+    dfm.loc[dfm.plant_name == "Lake Area Landfill Gas Recovery", "operating_month"] = 2
+    dfm.loc[dfm.plant_name == "Lake Area Landfill Gas Recovery", "operating_year"] = (
+        2024
+    )
+    dfm.loc[
+        dfm.plant_name == "Tenaska Frontier Generation Station", "operating_month"
+    ] = 5
+    dfm.loc[
+        dfm.plant_name == "Tenaska Frontier Generation Station", "operating_year"
+    ] = 2000
+    dfm.loc[dfm.plant_name == "Sugar Creek Power", "operating_month"] = 6
+    dfm.loc[dfm.plant_name == "Sugar Creek Power", "operating_year"] = 2002
+    dfm.loc[dfm.plant_name == "Black Dog", "operating_month"] = 4
+    dfm.loc[dfm.plant_name == "Black Dog", "operating_year"] = 2018
+    dfm.loc[dfm.plant_name == "Heartland Farms", "operating_month"] = 4
+    dfm.loc[dfm.plant_name == "Heartland Farms", "operating_year"] = 2024
+    dfm.loc[dfm.plant_name == "Essex", "operating_month"] = 6
+    dfm.loc[dfm.plant_name == "Essex", "operating_year"] = 1999
+    dfm.loc[dfm.plant_name == "Honeysuckle Solar Farm", "operating_month"] = 6
+    dfm.loc[dfm.plant_name == "Honeysuckle Solar Farm", "operating_year"] = 2024
+    dfm.loc[dfm.plant_name == "Wild Springs", "operating_month"] = 6
+    dfm.loc[dfm.plant_name == "Wild Springs", "operating_year"] = 2024
+    dfm.loc[dfm.plant_name == "Ross County Solar, LLC", "operating_month"] = 7
+    dfm.loc[dfm.plant_name == "Ross County Solar, LLC", "operating_year"] = 2024
+    dfm.loc[dfm.plant_name == "Union Ridge Solar", "operating_month"] = 6
+    dfm.loc[dfm.plant_name == "Union Ridge Solar", "operating_year"] = 2025
+    dfm.loc[dfm.plant_name == "Hardin Solar Energy LLC", "operating_month"] = 1
+    dfm.loc[dfm.plant_name == "Hardin Solar Energy LLC", "operating_year"] = 2021
 
-# In[ ]:
+# in cases where dfm.prime_mover_code is "BA" AND pmin_median is null, place pmin_median with -pmax_99_perc
+dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "BA")
+    & dfm.pmin_median.isnull(),
+    "pmin_median",
+] = -dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "BA")
+    & dfm.pmin_median.isnull(),
+    "pmax_99_perc",
+]
 
-# Manually adding missing data for plants
-dfm.loc[dfm.plant_name == "Cadiz Power Plant", "operating_month"] = 3
-dfm.loc[dfm.plant_name == "Cadiz Power Plant", "operating_year"] = 2016
-dfm.loc[dfm.plant_name == "Washington Parish Energy Center", "operating_month"] = 11
-dfm.loc[dfm.plant_name == "Washington Parish Energy Center", "operating_year"] = 2020
-dfm.loc[dfm.plant_name == "Minco Wind V, LLC", "operating_month"] = 12
-dfm.loc[dfm.plant_name == "Minco Wind V, LLC", "operating_year"] = 2018
-dfm.loc[dfm.plant_name == "Majestic 2 Wind Farm", "operating_month"] = 8
-dfm.loc[dfm.plant_name == "Majestic 2 Wind Farm", "operating_year"] = 2012
-dfm.loc[dfm.plant_name == "Alpaca", "operating_month"] = 4
-dfm.loc[dfm.plant_name == "Alpaca", "operating_year"] = 2017
-dfm.loc[dfm.plant_name == "Pioneer Crossing Energy, LLC", "operating_month"] = 10
-dfm.loc[dfm.plant_name == "Pioneer Crossing Energy, LLC", "operating_year"] = 2008
-dfm.loc[dfm.plant_name == "Lake Area Landfill Gas Recovery", "operating_month"] = 2
-dfm.loc[dfm.plant_name == "Lake Area Landfill Gas Recovery", "operating_year"] = 2024
-dfm.loc[dfm.plant_name == "Tenaska Frontier Generation Station", "operating_month"] = 5
-dfm.loc[dfm.plant_name == "Tenaska Frontier Generation Station", "operating_year"] = (
-    2000
-)
-dfm.loc[dfm.plant_name == "Sugar Creek Power", "operating_month"] = 6
-dfm.loc[dfm.plant_name == "Sugar Creek Power", "operating_year"] = 2002
-dfm.loc[dfm.plant_name == "Black Dog", "operating_month"] = 4
-dfm.loc[dfm.plant_name == "Black Dog", "operating_year"] = 2018
-dfm.loc[dfm.plant_name == "Heartland Farms", "operating_month"] = 4
-dfm.loc[dfm.plant_name == "Heartland Farms", "operating_year"] = 2024
-dfm.loc[dfm.plant_name == "Essex", "operating_month"] = 6
-dfm.loc[dfm.plant_name == "Essex", "operating_year"] = 1999
-dfm.loc[dfm.plant_name == "Honeysuckle Solar Farm", "operating_month"] = 6
-dfm.loc[dfm.plant_name == "Honeysuckle Solar Farm", "operating_year"] = 2024
-dfm.loc[dfm.plant_name == "Wild Springs", "operating_month"] = 6
-dfm.loc[dfm.plant_name == "Wild Springs", "operating_year"] = 2024
-dfm.loc[dfm.plant_name == "Ross County Solar, LLC", "operating_month"] = 7
-dfm.loc[dfm.plant_name == "Ross County Solar, LLC", "operating_year"] = 2024
-dfm.loc[dfm.plant_name == "Union Ridge Solar", "operating_month"] = 6
-dfm.loc[dfm.plant_name == "Union Ridge Solar", "operating_year"] = 2025
-dfm.loc[dfm.plant_name == "Hardin Solar Energy LLC", "operating_month"] = 1
-dfm.loc[dfm.plant_name == "Hardin Solar Energy LLC", "operating_year"] = 2021
+# in cases where dfm.prime_mover_code is "PS" AND pmin_median is null, place pmin_median with -pmax_99_perc
+dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "PS")
+    & dfm.pmin_median.isnull(),
+    "pmin_median",
+] = -dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "PS")
+    & dfm.pmin_median.isnull(),
+    "pmax_99_perc",
+]
+
+# in cases where dfm.prime_mover_code is "BA" AND pmin_median is 0, place pmin_median with -pmax_99_perc
+dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "BA")
+    & (dfm.pmin_median == 0),
+    "pmin_median",
+] = -dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "BA")
+    & (dfm.pmin_median == 0),
+    "pmax_99_perc",
+]
+
+# in cases where dfm.prime_mover_code is "PS" AND pmin_median is 0, place pmin_median with -pmax_99_perc
+dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "PS")
+    & (dfm.pmin_median == 0),
+    "pmin_median",
+] = -dfm.loc[
+    (dfm.energy_source_code == "WAT")
+    & (dfm.prime_mover_code == "PS")
+    & (dfm.pmin_median == 0),
+    "pmax_99_perc",
+]
 
 dfm_original__ = dfm.copy()
 
 
-# print plant names that are already missing from the list of known missing plants
-# The following plants were dropped because they do not have data about their operating year and month
-for item in list_of_missing_plants:
-    if not any(dfm.plant_name.str.contains(item)):
-        print(item)
-
-
-# dfm_to_map = dfm[dfm.eia_plant_code.isnull()]
-dfm.to_csv("df_miso_sub_mapping.csv", index=False)
-dfm.reset_index().to_csv("miso_plant_name_and_coordinates.csv", index=False)
+file_name_1 = f"df_{ISO.lower()}_sub_mapping.csv"
+file_name_2 = f"{ISO.lower()}_plant_name_and_coordinates.csv"
+dfm.to_csv(file_name_1, index=False)
+dfm.reset_index().to_csv(file_name_2, index=False)
 
 dfm_1 = dfm[~dfm.energy_source_code.isnull()].copy()
 
@@ -730,161 +773,6 @@ dfm_2 = dfm_1[
 if DEBUG_ON:
     dfm.drop(columns=["net_summer_capacity_mw"], inplace=True)
 
-# update dfm_2.pmax_99_perc
-# len(dfm_2[dfm_2.index.isin(df['generator_uid'])])
-if "generator_uid" in df.columns:
-    df.set_index("generator_uid", inplace=True)
-# df.set_index("generator_uid", inplace=True)   #Michael had this line without the if statement
-
-if False:
-    # this_dfm_3 = dfm_2.query('energy_source_code == "NG" and prime_mover_code == "CT"').copy()
-    # this_dfm_3 = dfm_2.query('energy_source_code == "NG" and prime_mover_code == "CA"').copy()
-    this_dfm_3 = dfm_2.query(
-        'energy_source_code == "NG" and prime_mover_code == "GT"'
-    ).copy()
-
-    # this_dfm_3['min_max_actual'] = None
-    # this_dfm_3['min_max_actual'] = this_dfm_3['pmin_median'] / this_dfm_3['pmax_99_perc']
-
-    df_3 = df[df.index.isin(this_dfm_3.index)].copy()
-    df_3["min_max_actual"] = df_3["pmin_Actual"] / df_3["pmax_Actual"]
-    df_3["min_max_forecast"] = df_3["pmin_Forecast"] / df_3["pmax_Forecast"]
-    # drop rows in df_3 where min_max_actual is nan
-    df_3 = df_3[~df_3.min_max_actual.isnull()].copy()
-    # drop rows in df_3 where min_max_forecast is nan
-    df_3 = df_3[~df_3.min_max_forecast.isnull()].copy()
-
-    # plt.scatter(df_3['min_max_forecast'].values, df_3['min_max_actual'].values)
-    plt.hist(df_3[df_3["min_max_forecast"] <= 0.5]["min_max_actual"].values, bins=100)
-
-
-if DEBUG_ON:
-    ccc = 0
-    for row in dfm_2.itertuples():
-        if row.Index in df.index:
-
-            # if not "Bison" in dfm_2.loc[row.Index].plant_name:
-            #     continue
-
-            # if not dfm_2.loc[row.Index].eia_plant_code == 57038:
-            #     continue
-
-            if not dfm_2.loc[row.Index].eia_plant_code == 1250:
-                continue
-
-            # only keep going if the forced Pmax (i.e., pmax_99_perc) is less than half the initial Pmax and also less than half the max of actual flow
-            # if not (2 * dfm_2.loc[row.Index]["pmax_99_perc"] < dfm_2.loc[row.Index]["pmax_max"]  and 2 * dfm_2.loc[row.Index]["pmax_99_perc"] < df.loc[row.Index]["actual_pg"].max()):
-            #     continue
-
-            dfm_Pmax = dfm_2.loc[row.Index, "pmax_99_perc"].max()
-            actual_pg_max = df.loc[row.Index, "actual_pg"].max()
-            orange_line = df.loc[row.Index, "pmax_Forecast"].max()
-            # if actual_pg_max > dfm_Pmax  and 'HENCO' in row.Index:
-            if (
-                actual_pg_max > dfm_Pmax
-            ):  # this is the cases that we want to increase pmax_Forecast
-                # if actual_pg_max * 2 < dfm_Pmax and actual_pg_max > 0:   # this is the cases that we want to increase pmax_Forecast
-                # if orange_line * 2 < dfm_Pmax:
-                ccc += 1
-                # if ccc < 28:
-                #     continue
-                # close all the previous plots
-                plt.close("all")
-
-                graphs = df.loc[row.Index]
-                net_cap = dfm_2.loc[row.Index].net_summer_capacity_mw
-
-                # Assuming 'graphs' is your DataFrame
-                ax = graphs["fcst_pg"].plot(
-                    color="green", linewidth=1
-                )  # Plot the first series and get the axis
-                graphs["actual_pg"].plot(ax=ax, color="purple", linewidth=1)
-                graphs["pmin_Actual"].plot(ax=ax, color="brown", linewidth=1)
-                graphs["pmax_Actual"].plot(ax=ax, color="brown", linewidth=1)
-                # graphs['pmin_Forecast'].plot(ax=ax, color='orange', linewidth=5)
-                graphs["pmax_Forecast"].plot(ax=ax, color="orange", linewidth=5)
-
-                plt.axhline(y=net_cap, color="b")
-                plt.title(
-                    "case "
-                    + str(ccc)
-                    + ":  "
-                    + str(
-                        dfm_2.loc[row.Index][
-                            ["eia_plant_code", "plant_name", "eia_gen_id"]
-                        ].values
-                    )
-                )
-
-                # set dfm_2's pmax_99_perc to the actual_pg_max
-                print(
-                    dfm_2.loc[row.Index][
-                        [
-                            "plant_name",
-                            "eia_plant_code",
-                            "eia_gen_id",
-                            "pmax_max",
-                            "pmax_median",
-                            "pmax_99_perc",
-                        ]
-                    ]
-                )
-
-                print(
-                    df.loc[row.Index][
-                        [
-                            "actual_pg",
-                            "fcst_pg",
-                            "pmin_Actual",
-                            "pmax_Actual",
-                            "pmax_Forecast",
-                            "pmin_Forecast",
-                        ]
-                    ][200:205]
-                )
-                print(dfm_2.loc[row.Index][["pmax_max", "pmax_99_perc", "pmin_median"]])
-                print(
-                    f'pmax_Actual: {df.loc[row.Index]["pmax_Actual"].max()}, initial pmax_Forecast was {dfm_2.loc[row.Index]["pmax_max"]} and I forced it to {dfm_2.loc[row.Index]["pmax_99_perc"]}'
-                )
-
-                dfm_2.loc[row.Index, "pmax_99_perc"] = actual_pg_max
-
-
-# lift Pmax, so that it will not be lower than the max actual flow that was seen in the past
-for row in dfm_2.itertuples():
-    if row.Index in df.index:
-        dfm_Pmax = dfm_2.loc[row.Index, "pmax_99_perc"].max()
-        actual_pg_max = df.loc[row.Index, "actual_pg"].max()
-        if (
-            actual_pg_max > dfm_Pmax
-        ):  # this is the cases that we want to increase pmax_Forecast
-            dfm_2.loc[row.Index, "pmax_99_perc"] = actual_pg_max
-
-
-if False:  # the following yields an unclear error
-    # prepare a new row in dfm_2 for a missin unit.
-    dfm_2.reset_index(inplace=True)
-    new_row = dfm_2[dfm_2["uid"] == "ORENTDRT ORENT_UNIT1"].copy()
-    new_row["uid"] = "ORENTDRT ORENT_UNIT2"
-    # append the new row to dfm_2
-    dfm_2 = dfm_2.append(new_row)
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "eia_gen_id"] = 2
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "generator_name"] = (
-        "ORENTDRT ORENT_UNIT2"
-    )
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "pmax_median"] = 400.0
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "pmax_99_perc"] = 400.0
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "pmax_max"] = 400.0
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "operating_year"] = 2019.0
-    dfm_2.loc[dfm_2.uid == "ORENTDRT ORENT_UNIT2", "epa_generator_id"] = 2
-    dfm_2.set_index("uid", inplace=True)
-
-
-# print plant names that are already missing from the list of known missing plants
-# The following plants were dropped because they do not have data about their operating year and month
-for item in list_of_missing_plants:
-    if not any(dfm_2.plant_name.str.contains(item)):
-        print(item)
 
 # dfm_2 = dfm_2[~dfm_2.operating_month.isnull()].copy()
 # in ERCOT it is replaced by this line:
@@ -897,10 +785,7 @@ dfm_2 = dfm_2[
 # The following plants were dropped because they do not have data about their operating year and month
 for item in list_of_missing_plants:
     if not any(dfm_2.plant_name.str.contains(item)):
-        print(item)
-
-
-# In[ ]:
+        print("3847834875: ", item)
 
 
 # Start up cost
@@ -910,9 +795,6 @@ for item in list_of_missing_plants:
 # !gsutil cp "gs://marginalunit-placebo-metadata/metadata/ercot.resourcedb/2023-08-16/resourcedb.zip" . && unzip resourcedb.zip
 # df_rdb = pd.read_parquet("resources.parquet")
 # df_gdb = pd.read_parquet("generators.parquet")
-
-
-# In[ ]:
 
 
 _NO_LIMIT = (1, 1, 9999)
@@ -1053,7 +935,8 @@ category_mapping = {
     "LFG": "biogas",
     "LIG": "coal",
     "MSW": "waste",
-    "MWH": "hydro",
+    # "MWH": "hydro",
+    "MWH": "battery",
     "NG": "gas",
     "NUC": "nuclear",
     "OBG": "biogas",
@@ -1336,7 +1219,6 @@ for category in ML_modeling_results.keys():
 
 dfm_2_copy["pmin_median"] = dfm_2["pmin_median"]
 
-
 # Coal
 # # in rows where the category is 'coal', wherever the pmin_median is more than 55% of the pmax_99_perc, set the pmin_median to 55% of the pmax_99_perc
 # dfm_2_copy.loc[(dfm_2.category == 'coal') & (dfm_2.pmin_median > 0.55 * dfm_2.pmax_99_perc), 'pmin_median'] = 0.55 * dfm_2.pmax_99_perc
@@ -1466,9 +1348,9 @@ dfm_2_copy.loc[
 )  # for all other prime_mover_codes
 
 # renewbles and other
-dfm_2_copy.loc[dfm_2.category == "hydro", "pmin_median"] = dfm_2_copy.loc[
-    dfm_2.category == "hydro", "pmin_median"
-].clip(lower=0)
+# dfm_2_copy.loc[dfm_2.category == "hydro", "pmin_median"] = dfm_2_copy.loc[
+#     dfm_2.category == "hydro", "pmin_median"
+# ].clip(lower=0)
 dfm_2_copy.loc[dfm_2.category == "nuclear", "pmin_median"] = dfm_2_copy.loc[
     dfm_2.category == "nuclear", "pmin_median"
 ].clip(lower=0)
@@ -1956,8 +1838,9 @@ dfm_2.groupby("energy_source_code")["fitting_param_x"].mean()
 
 # dfm_2.groupby('energy_source_code')['fitting_param_x', 'fitting_param_intercept'].agg(['mean', 'count']).sort_values(('fitting_param_x', 'count'), ascending=False)
 # dfm_2.groupby('energy_source_code', 'prime_mover_code')['fitting_param_x', 'fitting_param_intercept'].agg(['mean', 'count']).sort_values(('fitting_param_x', 'count'), ascending=False)
+# dfm_2.groupby(['energy_source_code', 'prime_mover_code'])['fitting_param_x', 'fitting_param_intercept'].agg(['mean', 'count']).sort_values( 'energy_source_code', ascending=True)
 dfm_2.groupby(["energy_source_code", "prime_mover_code"])[
-    "fitting_param_x", "fitting_param_intercept"
+    ["fitting_param_x", "fitting_param_intercept"]
 ].agg(["mean", "count"]).sort_values("energy_source_code", ascending=True)
 dfm_2.groupby("energy_source_code")["fitting_param_x"].mean()
 
@@ -2161,6 +2044,9 @@ for row in dfm_2.reset_index().itertuples():
     if "MCV".lower() in row.uid.lower():
         SET_MUST_RUN_TRUE = True
 
+    if "LARAMIE".lower() in row.uid.lower() and "BEPM".lower() in row.uid.lower():
+        SET_MUST_RUN_TRUE = True
+
     key = (row.energy_source_code, row.prime_mover_code)
     min_up_time, min_down_time, ramp_rate = _DEFAULT_PHYSICAL_CHARACTERISTICS.get(
         key, (10, 10, 9999)
@@ -2174,7 +2060,7 @@ for row in dfm_2.reset_index().itertuples():
     if category_mapping.get(row.energy_source_code, "other") in {
         "wind",
         "solar",
-        "hydro",
+        # "hydro",
     }:
         pmin = 0.0
 
@@ -2205,8 +2091,11 @@ for row in dfm_2.reset_index().itertuples():
         end_date = date(int(row.retirement_year), int(row.retirement_month), 1)
 
     storage_capacity = None
-    # if row.energy_source_code == "MWH":
-    #     storage_capacity = storage_capacity_by_uid.get(row.uid, pmax)
+    if row.energy_source_code in ["MWH"]:
+        storage_capacity = 4 * pmax
+        # storage_capacity = storage_capacity_by_uid.get(row.uid, pmax)
+    elif row.energy_source_code in ["WAT"] and row.prime_mover_code in ["PS"]:
+        storage_capacity = 10 * pmax
 
     # If we are dealing with a nat gas generator: provide information about the closest gas hub
     current_supplier_hub_data = None
@@ -2231,7 +2120,7 @@ for row in dfm_2.reset_index().itertuples():
     # if we are dealing with a hydroelectric generator
     current_supplier_capacity_factors = None
     if (
-        row.energy_source_code in ["WAT", "MWH"]
+        row.energy_source_code in ["WAT"]
         and row.uid.replace(" ", "")
         in hydro_capacity_factor.name.apply(lambda x: x.replace(" ", "")).values
     ):
@@ -2246,7 +2135,9 @@ for row in dfm_2.reset_index().itertuples():
         hydro_capacity_factor_data_found = False
         for one_hydro_data in this_hydro_data.iterrows():
             unit_id = (
-                one_hydro_data[1].unit_id.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+                # one_hydro_data[1].unit_id.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+                str(one_hydro_data[1].unit_id).replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+
             )
             if unit_id == row.eia_gen_id.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")   or   unit_id == row.epa_generator_id.replace(" ", "").replace("-", "").replace("_", "").replace(".", ""):
                 this_hydro_data = one_hydro_data[1]
@@ -2343,45 +2234,7 @@ for row in dfm_2.reset_index().itertuples():
     resources.append(resource)
 
 
-if False:
-    # Calculate the mean and standard deviation of the group
-    group_stats = dfm_2.groupby(["energy_source_code", "prime_mover_code"])[
-        ["fitting_param_x", "fitting_param_intercept"]
-    ].agg(["median", "std"])
-
-    # Define a function to replace outliers
-    def replace_outliers(row):
-        median_x = group_stats.loc[
-            (row["energy_source_code"], row["prime_mover_code"]),
-            ("fitting_param_x", "median"),
-        ]
-        std_x = group_stats.loc[
-            (row["energy_source_code"], row["prime_mover_code"]),
-            ("fitting_param_x", "std"),
-        ]
-        median_intercept = group_stats.loc[
-            (row["energy_source_code"], row["prime_mover_code"]),
-            ("fitting_param_intercept", "median"),
-        ]
-        std_intercept = group_stats.loc[
-            (row["energy_source_code"], row["prime_mover_code"]),
-            ("fitting_param_intercept", "std"),
-        ]
-
-        if (
-            abs(row["fitting_param_x"] - median_x) > 1 * std_x
-            or abs(row["fitting_param_intercept"] - median_intercept)
-            > 1 * std_intercept
-        ):
-            row["fitting_param_x"] = median_x
-            row["fitting_param_intercept"] = median_intercept
-
-        return row
-
-    # Apply the function to dfm_2
-    dfm_2 = dfm_2.apply(replace_outliers, axis=1)
-
-
+# here we run on plants that were not in Scott Bruns' list:
 if True:
     # Calculate the mean and standard deviation of the group
     # group_stats = dfm_2.groupby(['energy_source_code', 'prime_mover_code'])[['fitting_param_x', 'fitting_param_intercept']].agg(['median', 'std'])
@@ -2419,8 +2272,11 @@ if True:
             ("fitting_param_intercept", "std"),
         ]
 
-        # if abs(row['fitting_param_x'] - median_x) > 2 * std_x or abs(row['fitting_param_intercept'] - median_intercept) > 2 * std_intercept:
-        if abs(row["fitting_param_x"] - median_x) > 2 * std_x:
+        if (
+            abs(row["fitting_param_x"] - median_x) > 2 * std_x
+            or abs(row["fitting_param_intercept"] - median_intercept)
+            > 2 * std_intercept
+        ):
             row["fitting_param_x"] = median_x
             row["fitting_param_intercept"] = median_intercept
 
@@ -2433,8 +2289,7 @@ if True:
     # Apply the function to dfm_2
     dfm_2 = dfm_2.apply(replace_outliers, axis=1)
 
-
-if True:
+if False:
     # plot a histogram of the heat rate of all the dfm_2 rows where the energy_source_code is 'NG' and the prime_mover_code is 'GT'
     dfm_2[
         (dfm_2.energy_source_code == "NG") & (dfm_2.prime_mover_code == "GT")
@@ -2466,168 +2321,22 @@ dfm_2.groupby(["energy_source_code", "prime_mover_code"])[
     ["pmin_median", "pmax_99_perc"]
 ].agg(["median", "max", "min", "count"])
 
-plt.show()
+# plt.show()
 
 dfsc = pd.Series(supply_curves)
-dfsc[dfsc.index.str.contains("BIGSTON  BIGSTOT1_UNIT")].iloc[0]
+dfsc[dfsc.index.str.contains("VOGTLE1")].iloc[0]
 
 
 # In[ ]:
 
 print(f"Number of OFFSET and MKT removed: {cnttt}")
 
-version = "resourcedb-v4/miso/20240423t1825"
+version = "resourcedb-v4/spp/20240423t1825"
 
 # jupyter: run the following.
 # get_ipython().system('mkdir -p $version')
 # VS-Code: run the following.
 os.makedirs(version, exist_ok=True)
-
-
-############################ Add generators (from Steven Zhou):
-def _download_blob_to_memory(bucket_name: str, source_blob_name: str) -> BytesIO:
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(source_blob_name)
-    bytes_buffer = BytesIO()
-    blob.download_to_file(bytes_buffer)
-    bytes_buffer.seek(0)
-    return bytes_buffer
-
-
-# def _split_gcs_path(path: str) -> tuple[str, str]:
-def _split_gcs_path(path: str):
-    parsed = urlparse(path)
-    assert parsed.scheme == "gs"
-
-    bucket = parsed.netloc
-
-    assert parsed.path[0] == "/"
-    key = parsed.path[1:]
-
-    return bucket, key
-
-
-def read_json_from_gcp(gcs_file_path: str):  # type: ignore
-    bucket_name, file_name = _split_gcs_path(gcs_file_path)
-    client = storage.Client()
-    bucket = client.get_bucket(bucket_name)
-    blob = bucket.blob(file_name)
-    json_string = blob.download_as_string()
-    json_data = json.loads(json_string)
-    return json_data
-
-
-index = [
-    index
-    for index, item in enumerate(resources)
-    if item["uid"] == "BISONMP  BISON1_UNIT"
-][0]
-resources[index]["generators"] = [
-    {
-        "uid": "BISONMP  BISON1_UNIT",
-        "state": "ND",
-        "station": "DUMMY",
-        "kv": 1,
-        "coordinates": {"latitude": 46.98, "longitude": -101.5547},
-        "eia_uid": {"eia_id": 57038, "unit_id": "PHS1"},
-        "psse_generator_uid": "BISONMP  BISON1_UNIT",
-    },
-    {
-        "uid": "BISONMP  BISON1_UNIT",
-        "state": "ND",
-        "station": "DUMMY",
-        "kv": 1,
-        "coordinates": {"latitude": 46.98, "longitude": -101.5547},
-        "eia_uid": {"eia_id": 57800, "unit_id": "BISO2"},
-        "psse_generator_uid": "BISONMP  BISON1_UNIT",
-    },
-    {
-        "uid": "BISONMP  BISON1_UNIT",
-        "state": "ND",
-        "station": "DUMMY",
-        "kv": 1,
-        "coordinates": {"latitude": 46.98, "longitude": -101.5547},
-        "eia_uid": {"eia_id": 57801, "unit_id": "BISO3"},
-        "psse_generator_uid": "BISONMP  BISON1_UNIT",
-    },
-    {
-        "uid": "BISONMP  BISON1_UNIT",
-        "state": "ND",
-        "station": "DUMMY",
-        "kv": 1,
-        "coordinates": {"latitude": 46.98, "longitude": -101.5547},
-        "eia_uid": {"eia_id": 58872, "unit_id": "BISO4"},
-        "psse_generator_uid": "BISONMP  BISON1_UNIT",
-    },
-]
-resources[index]["physical_properties"]["pmax"] = 496.8
-
-
-index = [
-    index
-    for index, item in enumerate(resources)
-    if item["uid"] == "OLIVERCO OLIVER12_UNIT"
-][0]
-resources[index]["generators"] = [
-    {
-        "uid": "OLIVERCO OLIVER12_UNIT",
-        "state": "ND",
-        "station": "DUMMY",
-        "kv": 1,
-        "coordinates": {"latitude": 47.152847, "longitude": -101.1977},
-        "eia_uid": {"eia_id": 56392, "unit_id": "1"},
-        "psse_generator_uid": "OLIVERCO OLIVER12_UNIT",
-    },
-    {
-        "uid": "OLIVERCO OLIVER12_UNIT",
-        "state": "ND",
-        "station": "DUMMY",
-        "kv": 1,
-        "coordinates": {"latitude": 47.152847, "longitude": -101.1977},
-        "eia_uid": {"eia_id": 56573, "unit_id": "2"},
-        "psse_generator_uid": "OLIVERCO OLIVER12_UNIT",
-    },
-]
-
-# Michael adds the following, July 18:
-index = [
-    index
-    for index, item in enumerate(resources)
-    if item["uid"] == "ORENTDRT ORENT_UNIT1"
-][0]
-resources[index]["physical_properties"]["pmax"] = 500.0
-
-# Michael adds the following, July 21:
-index = [
-    index for index, item in enumerate(resources) if item["uid"] == "MORRO_SM CT1"
-][0]
-resources[index]["physical_properties"]["pmax"] = 398.0
-
-# Michael adds the following, July 21:
-index = [index for index, item in enumerate(resources) if item["uid"] == "HYDRO2   G1"][
-    0
-]
-resources[index]["physical_properties"]["pmax"] = 110.0
-
-# Michael adds the following, July 21:
-index = [
-    index
-    for index, item in enumerate(resources)
-    if item["uid"] == "JIM_FLS  JIMF_HYD_UNIT"
-][0]
-resources[index]["physical_properties"]["pmax"] = 60.0
-
-# # Michael adds the following, July 21:
-# index = [
-#     index
-#     for index, item in enumerate(resources)
-#     if item["uid"] == "JIM_FLS  JIMF_HYD_UNIT"
-# ][0]
-# resources[index]["physical_properties"]["pmax"] = 60.0
-
-
-########### End of Steven Zhou's code
 
 with open(f"{version}/resources.json", "w") as fdesc:
     fdesc.write(jsonplus.dumps(resources))
@@ -2637,18 +2346,39 @@ with open(f"{version}/resources.json", "w") as fdesc:
 #     if 'MCV' in r["uid"]:
 #         print(r)
 
+
+#######
+# Check if the supply_curves dictionary is serializable
+# def find_unserializable_item(supply_curves):
+#     for key, value in supply_curves.items():
+#         try:
+#             # Attempt to serialize the item
+#             json.dumps(value)
+#         except TypeError as e:
+#             # If serialization fails, print the key and the error
+#             print(f"Serialization failed for key: {key}, Error: {e}")
+#             # Optionally, return or break if you want to stop at the first failure
+#             # return key, value
+#     print("All items are serializable")
+
+# find_unserializable_item(supply_curves)
+
+
 with open(f"{version}/supply_curves.json", "w") as fdesc:
     fdesc.write(jsonplus.dumps(supply_curves))
 
 
-if False:
-    ######################
-    # Find missing generators
+######################
+# Find missing generators
 
+if False:
+    # the two sources for the parquet files:
+    # "s3://enverus-pr-ue1-cdr-unrestricted-mu-ingested-prod/crcl/hrrr-solar-forecasts/20240129T2045Z/2024-05-06T06:00:00+00:00.parquet"
+    # "s3://enverus-pr-ue1-cdr-unrestricted-mu-ingested-prod/crcl/hrrr-wind-forecasts/20240129T2045Z/2024-05-06T06:00:00+00:00.parquet"
     df_crcl_wind = pd.read_parquet("2024-05-06T06:00:00+00:00_wind.parquet")
     df_crcl_solar = pd.read_parquet("2024-05-06T06:00:00+00:00_solar.parquet")
-    df_crcl_wind = df_crcl_wind[df_crcl_wind["iso"] == "MISO"]
-    df_crcl_solar = df_crcl_solar[df_crcl_solar["iso"] == "MISO"]
+    df_crcl_wind = df_crcl_wind[df_crcl_wind["iso"] == "SPP"]
+    df_crcl_solar = df_crcl_solar[df_crcl_solar["iso"] == "SPP"]
 
     # put both dataframes on under the other in a new dataframe
     df_crcl = pd.concat([df_crcl_wind, df_crcl_solar], ignore_index=True)
@@ -2688,7 +2418,7 @@ if False:
         ~df_exists_only_in_df_crcl.index.isin(dfm_original__.index)
     ]
 
-    df_exists_only_in_df_crcl.to_csv("MISO_df_exists_only_in_df_crcl.csv", index=False)
+    df_exists_only_in_df_crcl.to_csv("SPP2_df_exists_only_in_df_crcl.csv", index=False)
 
     dfm_original__["uid"] = dfm_original__.eia_plant_code
     df_exists_in_dfm_original__but_not_dfm_2 = dfm_original__[
@@ -2708,7 +2438,7 @@ if False:
         df_exists_only_in_df_crcl.shape,
     )
 
-    # print('------------------------------------------------')
+    print("------------------------------------------------")
     # #check mismatching names between EIA and our data:
     # for line in df_exists_in_both.itertuples():
     #     # plot the plant_name and the location of the generator and format the output to be more readable
@@ -2717,35 +2447,34 @@ if False:
     # print(line.plant_name, line.location)
 
     print(18)
-if False:
-    get_ipython().system("ls resourcedb-v4/miso/20240423")
+    if False:
+        get_ipython().system("ls resourcedb-v4/miso/20240423")
 
-    resources[5]
+        resources[5]
 
-    get_ipython().system("cd resourcedb-v4/miso/20240423 && find $(pwd)")
+        get_ipython().system("cd resourcedb-v4/miso/20240423 && find $(pwd)")
 
-    df = pd.read_csv("/Users/michael.simantov/Desktop/portfolio/miso_ctg_v2.csv")
+        df = pd.read_csv("/Users/michael.simantov/Desktop/portfolio/miso_ctg_v2.csv")
 
-    df = pd.DataFrame(resources)
+        df = pd.DataFrame(resources)
 
-    [
-        r
-        for r in resources
-        if r["physical_properties"]["pmin"] <= r["physical_properties"]["pmax"]
-    ]
+        [
+            r
+            for r in resources
+            if r["physical_properties"]["pmin"] <= r["physical_properties"]["pmax"]
+        ]
 
-    df[df.uid == "FERGUS2  STILLWATER_EC2"].physical_properties.iloc[0]
+        df[df.uid == "FERGUS2  STILLWATER_EC2"].physical_properties.iloc[0]
 
-    df = pd.read_parquet(
-        "/Users/michael.simantov/Documents/draft/ps_engine_results/miso/first-20240423/denormalized_hub/08204d01-85a9-45ec-8226-692b610ac457 -- 2024-04-06T04:00:00-05:00 -- 2024-04-06T02:00:00-05:00.parquet"
-    )
+        df = pd.read_parquet(
+            "/Users/michael.simantov/Documents/draft/ps_engine_results/miso/first-20240423/denormalized_hub/08204d01-85a9-45ec-8226-692b610ac457 -- 2024-04-06T04:00:00-05:00 -- 2024-04-06T02:00:00-05:00.parquet"
+        )
 
-    df.timestamp = df.timestamp.dt.tz_localize("UTC").dt.tz_convert("US/Eastern")
+        df.timestamp = df.timestamp.dt.tz_localize("UTC").dt.tz_convert("US/Eastern")
 
-    df[df.name == "ILLINOIS.HUB"].set_index("timestamp").price.plot(grid=True)
-    plt.ylim(0, None)
+        df[df.name == "ILLINOIS.HUB"].set_index("timestamp").price.plot(grid=True)
+        plt.ylim(0, None)
 
-    set(df["Contingency Name"].unique())
+        set(df["Contingency Name"].unique())
 
-
-# %%
+    # %%

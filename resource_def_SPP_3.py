@@ -56,7 +56,7 @@ jsonplus.prefer_compat()
 
 
 COLLECTION = "spp-se"
-GO_TO_GCLOUD = True
+GO_TO_GCLOUD = False
 NON_LINEAR_METHOD_TO_USE = "RandomForest"
 # NON_LINEAR_METHOD_TO_USE = "XGB"
 
@@ -384,9 +384,6 @@ dfm = pd.merge(
 dfm.drop(columns=["net_summer_capacity_mw_y"], inplace=True)
 dfm.rename(columns={"net_summer_capacity_mw_x": "net_summer_capacity_mw"}, inplace=True)
 
-# In[ ]:
-
-
 # 1) Remove generators that we have not seen in more than 1 year
 dfm = dfm[dfm.latest_appearance >= "stateestimator_20230101"]
 
@@ -438,6 +435,11 @@ dfm.drop(columns=["net_summer_capacity_mw"], inplace=True)
 # dfm.loc[dfm.plant_name == "Pioneer Crossing Energy, LLC", "operating_year"] = 2008
 # dfm.loc[dfm.plant_name == "Lake Area Landfill Gas Recovery", "operating_month"] = 2
 # dfm.loc[dfm.plant_name == "Lake Area Landfill Gas Recovery", "operating_year"] = 2024
+
+# in cases where dfm.prime_mover_code is "BA" AND pmin_median is null, place pmin_median with -pmax_99_perc
+dfm.loc[(dfm.prime_mover_code == "BA") & dfm.pmin_median.isnull(), "pmin_median"] = (
+    -dfm.loc[(dfm.prime_mover_code == "BA") & dfm.pmin_median.isnull(), "pmax_99_perc"]
+)
 
 dfm_original__ = dfm.copy()
 
@@ -691,7 +693,8 @@ category_mapping = {
     "LFG": "biogas",
     "LIG": "coal",
     "MSW": "waste",
-    "MWH": "hydro",
+    # "MWH": "hydro",
+    "MWH": "battery",
     "NG": "gas",
     "NUC": "nuclear",
     "OBG": "biogas",
@@ -1819,8 +1822,11 @@ for row in dfm_2.reset_index().itertuples():
         end_date = date(int(row.retirement_year), int(row.retirement_month), 1)
 
     storage_capacity = None
-    # if row.energy_source_code == "MWH":
-    #     storage_capacity = storage_capacity_by_uid.get(row.uid, pmax)
+    if row.energy_source_code in ["MWH"]:
+        storage_capacity = 4 * pmax
+        # storage_capacity = storage_capacity_by_uid.get(row.uid, pmax)
+    elif row.energy_source_code in ["WAT"]:
+        storage_capacity = 10 * pmax
 
     # If we are dealing with a nat gas generator: provide information about the closest gas hub
     current_supplier_hub_data = None
