@@ -2064,7 +2064,7 @@ cntr_of_generators_not_in_EIA = 0
 
 # add new link below:
 # GAS_bids_file_name = "/Users/michael.simantov/Documents/supply_curve_building/Found_predicted_bids_18_clean_20250306.csv"
-GAS_bids_file_name = "/Users/michael.simantov/Documents/supply_curve_building/Found_predicted_bids_19_clean_20250307.csv"
+GAS_bids_file_name = "/Users/michael.simantov/Documents/supply_curve_building/Found_predicted_bids_24_clean_20250324.csv"
 
 
 GAS_predicted_bids = pd.read_csv(GAS_bids_file_name)
